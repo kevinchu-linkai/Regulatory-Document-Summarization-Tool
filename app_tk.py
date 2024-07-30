@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, scrolledtext, filedialog, messagebox
+from tkinter import ttk, scrolledtext, filedialog, messagebox, simpledialog
 import requests
 import json
 import threading
@@ -12,6 +12,20 @@ import docx2txt
 import PyPDF2
 import csv
 import io
+
+class CheckboxDialog(tk.Toplevel):
+    def __init__(self, parent, title, options):
+        super().__init__(parent)
+        self.title(title)
+        self.result = []
+        
+        for option in options:
+            var = tk.BooleanVar()
+            cb = ttk.Checkbutton(self, text=option, variable=var)
+            cb.pack(anchor="w", padx=10, pady=5)
+            self.result.append((option, var))
+        
+        ttk.Button(self, text="OK", command=self.destroy).pack(pady=10)
 
 class LLMPlayground:
     def __init__(self, master):
@@ -70,7 +84,7 @@ class LLMPlayground:
 
         ttk.Label(sidebar, text="Max Tokens").pack(pady=5)
         self.max_tokens_entry = ttk.Entry(sidebar)
-        self.max_tokens_entry.insert(0, "100")
+        self.max_tokens_entry.insert(0, "8192")
         self.max_tokens_entry.pack(pady=5, padx=5, fill='x')
 
         ttk.Button(sidebar, text="Upload Context for RAG", command=self.upload_context_for_rag).pack(pady=5, fill='x')
@@ -114,6 +128,72 @@ class LLMPlayground:
 
         self.chat_display.configure(font=default_font, background='white', foreground='#333333')
         self.conversation_listbox.configure(font=default_font, background='white', foreground='#333333')
+
+    def guided_prompt_creation(self):
+        print("Starting guided prompt creation...")
+        # Field checkboxes
+        fields = [
+            "EMC", "Safety", "Wireless", "Telecom/PSTN", "Materials", "Energy",
+            "Packaging", "Cybersecurity", "US Federal", "Others"
+        ]
+        field_dialog = CheckboxDialog(self.master, "Select Fields", fields)
+        self.master.wait_window(field_dialog)
+        selected_fields = [option for option, var in field_dialog.result if var.get()]
+
+        # Impact checkboxes
+        impacts = [
+            "Certification / DOC/ Registration", "New/ Revision", "Regulatory Filing",
+            "Design Change", "Component impact", "Cost impact", "Factory inspection",
+            "Label – New/ Revised Packaging Label", "Logistics", "Product Label",
+            "Product Documentation/Web", "Producer Responsibility/ EDPs",
+            "RQA Revision /Creation", "Specification Revision/ Creation", "Supply Chain",
+            "Testing", "Trade Compliance", "Configuration Restriction", "Sales Operation",
+            "Services (Product/Operation/Logistics)", "Annual Report", "TBD"
+        ]
+        impact_dialog = CheckboxDialog(self.master, "Select Impacts", impacts)
+        self.master.wait_window(impact_dialog)
+        selected_impacts = [option for option, var in impact_dialog.result if var.get()]
+
+        # General and Sub-Questions
+        answers = {}
+        
+        def ask_sub_questions(main_question, sub_questions):
+            if messagebox.askyesno("Question", main_question):
+                for sub_q in sub_questions:
+                    if isinstance(sub_q, tuple):
+                        sub_dialog = CheckboxDialog(self.master, sub_q[0], sub_q[1])
+                        self.master.wait_window(sub_dialog)
+                        answers[sub_q[0]] = [option for option, var in sub_dialog.result if var.get()]
+                    else:
+                        answer = messagebox.askyesno("Sub-Question", sub_q)
+                        answers[sub_q] = "Yes" if answer else "No"
+            else:
+                answers[main_question] = "No"
+
+        ask_sub_questions("Does it impact product 'Design change'?", [])
+        ask_sub_questions("Does it impact product 'Label'?", 
+                        [("Label changes:", ["Additional statement", "New logo", "Color change", "Others"])])
+        ask_sub_questions("Does it impact 'Packaging'?", 
+                        [("Packaging changes:", ["Additional statement", "New logo", "Others"])])
+        ask_sub_questions("Does it impact 'User manual' (hard copy)?", 
+                        [("Hard copy changes:", ["SERI", "QR card"])])
+        ask_sub_questions("Does it impact 'User manual' (soft copy)?", 
+                        ["Website (JIRA - e.g. TW RoHS Table)", 
+                        "Documentation (dell.com – e.g. owner's manual, service manual)"])
+
+        # Construct the suggested prompt
+        suggested_prompt = "Please summarize the attached document with the following considerations:\n\n"
+        suggested_prompt += f"Fields: {', '.join(selected_fields)}\n\n"
+        suggested_prompt += f"Impacts: {', '.join(selected_impacts)}\n\n"
+        suggested_prompt += "Specific impacts and changes:\n"
+        for question, answer in answers.items():
+            if isinstance(answer, list):
+                suggested_prompt += f"- {question} {', '.join(answer)}\n"
+            else:
+                suggested_prompt += f"- {question} {answer}\n"
+
+        print(f"Suggested prompt: {suggested_prompt}")
+        return suggested_prompt
 
     def upload_context_for_rag(self):
         file_path = filedialog.askopenfilename(filetypes=[
@@ -163,15 +243,39 @@ class LLMPlayground:
             return
         
         user_input = self.user_input.get()
+        user_input_hide = user_input
         if not user_input and not self.attached_file_content:
             return
 
+        # Start the guided prompt creation process if a file is attached
+        if self.attached_file_content:
+            suggested_prompt = self.guided_prompt_creation()
+            if suggested_prompt:
+                user_input = suggested_prompt
+                user_input_hide = suggested_prompt
+                user_input_hide += "\nPlease provide a comprehensive summary for a bulletin based on these factors.Pretend that you are a regulatory engineer whose job is to interpret this document into an internal regulatory bulletin for engineers to follow some important compliance guidance, not knowing the punishment for not following. I want the summary be provided with all the following sections, and all of them should be filled in with corresponding information\n" + \
+                                "1)	Program Requirements Summary, a 2-3 sentence, brief summary of the regulation.\n" + \
+                                "2)	Regulation Publication Date, the date the regulation was published.   If regulation has not been published, leave this blank.\n" + \
+                                "3)	Enforcement Date: This is the effective date of the regulation.\n" + \
+                                "4)	Enforcement based on: Type of enforcement\n" + \
+                                "5)	Compliance Checkpoint: How is regulation enforced upon entry?\n" + \
+                                "6)	Regulation Status: Type of Regulation Status\n" + \
+                                "7)	What is current process: If a regulation revision, this will be a 2-3 sentence summary of the current process, if it is a new regulation, note that it is new\n" + \
+                                "8)	What has changed from current process:  2-3 sentence summary of what is changing from existing regulation process.  This section is what is used for Bulletin email summaries. Character limit has been increased to 1000. Must ensure Summary in properties reflects same as Bulletin\n" + \
+                                "9)	Key Details – Legislation Requirement: This section is the regulation requirements. What is needed to reach compliance.\n" + \
+                                "10) Requirement: Frequently used Requirements are listed in the table template, add additional requirements as required, and delete those not relevant.\n" + \
+                                "11) Dependency: Is the requirement dependent on another requirement in the table? If so, list the requirement that must be completed to meet the requirement.\n" + \
+                                "12) Details of Requirement: High level explanation of the regulatory requirement\n" + \
+                                "13) Wireless Technology Scope: For Wireless Programs only, leave blank if not related\n" + \
+                                "14) Detail Requirements: This is details of Regulation.  May include some tables and technical detail copied from regulation.  Should not, however be a straight copy/paste.\n" 
+
         display_message = user_input
-        full_message = user_input
+        full_message = user_input_hide
 
         if self.attached_file_content:
             display_message += "\n[Attached file content not displayed]"
             full_message += f"\n\nAttached file content:\n{self.attached_file_content}"
+            print(full_message)
 
         if self.current_conversation is None:
             self.new_chat()
@@ -183,6 +287,7 @@ class LLMPlayground:
         model = self.model_combobox.get()
         if model != "Select a model":
             threading.Thread(target=self.get_model_response, args=(model, full_message)).start()
+            print(full_message)
 
         self.attached_file_content = None  # Reset after sending
         
