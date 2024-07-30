@@ -1,50 +1,191 @@
 import tkinter as tk
-from tkinter import ttk, scrolledtext
+from tkinter import ttk, scrolledtext, filedialog, messagebox
 import requests
 import json
 import threading
+import os
+import pickle
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
+import docx2txt
+import PyPDF2
+import csv
+import io
 
 class LLMPlayground:
     def __init__(self, master):
         self.master = master
         master.title("LLM Playground")
-        master.geometry("800x600")
+        master.geometry("1200x800")
 
         self.conversations = {}
         self.current_conversation = None
+        self.context = ""
+        self.embeddings_model = SentenceTransformer('all-MiniLM-L6-v2')
+        self.context_embeddings = None
+        self.attached_file_content = None
+        self.is_generating = False
+        self.current_attachment = None
 
         self.create_widgets()
+        self.apply_style()
 
     def create_widgets(self):
-        # Create sidebar
-        sidebar = ttk.Frame(self.master, width=200, relief='sunken', borderwidth=1)
-        sidebar.pack(side='left', fill='y', expand=False)
+        # Create main frame
+        main_frame = ttk.Frame(self.master)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        # Create main chat area
-        chat_area = ttk.Frame(self.master)
+        # Create sidebar
+        sidebar = ttk.Frame(main_frame, width=250, relief='groove', borderwidth=2)
+        sidebar.pack(side='left', fill='y', padx=(0, 10))
+
+        # Create chat area
+        chat_area = ttk.Frame(main_frame)
         chat_area.pack(side='right', fill='both', expand=True)
 
         # Sidebar widgets
-        ttk.Button(sidebar, text="New Chat", command=self.new_chat).pack(pady=10)
+        ttk.Button(sidebar, text="New Chat", command=self.new_chat).pack(pady=5, fill='x')
+        ttk.Button(sidebar, text="Save Conversations", command=self.save_conversations).pack(pady=5, fill='x')
+        ttk.Button(sidebar, text="Load Conversations", command=self.load_conversations).pack(pady=5, fill='x')
+        ttk.Button(sidebar, text="Clear Chat History", command=self.clear_chat_history).pack(pady=5, fill='x')
+        
         ttk.Label(sidebar, text="Your conversations").pack(pady=5)
-        self.conversation_listbox = tk.Listbox(sidebar, width=25)
+        self.conversation_listbox = tk.Listbox(sidebar)
         self.conversation_listbox.pack(pady=5, padx=5, fill='x')
         self.conversation_listbox.bind('<<ListboxSelect>>', self.on_conversation_select)
 
         ttk.Label(sidebar, text="Select Ollama Model").pack(pady=5)
         self.model_combobox = ttk.Combobox(sidebar, values=self.get_ollama_models())
-        self.model_combobox.pack(pady=5, padx=5)
-        self.model_combobox.set("Select a model")
+        self.model_combobox.pack(pady=5, padx=5, fill='x')
+        if "llama3" in self.model_combobox['values']:
+            self.model_combobox.set("llama3")
+        else:
+            self.model_combobox.set(self.model_combobox['values'][0])
+
+        ttk.Label(sidebar, text="Temperature").pack(pady=5)
+        self.temperature_scale = ttk.Scale(sidebar, from_=0, to=1, orient='horizontal')
+        self.temperature_scale.set(0.7)
+        self.temperature_scale.pack(pady=5, padx=5, fill='x')
+
+        ttk.Label(sidebar, text="Max Tokens").pack(pady=5)
+        self.max_tokens_entry = ttk.Entry(sidebar)
+        self.max_tokens_entry.insert(0, "100")
+        self.max_tokens_entry.pack(pady=5, padx=5, fill='x')
+
+        ttk.Button(sidebar, text="Upload Context for RAG", command=self.upload_context_for_rag).pack(pady=5, fill='x')
 
         # Chat area widgets
         self.chat_display = scrolledtext.ScrolledText(chat_area, state='disabled')
-        self.chat_display.pack(pady=10, padx=10, fill='both', expand=True)
+        self.chat_display.pack(pady=10, fill='both', expand=True)
 
-        self.user_input = ttk.Entry(chat_area)
-        self.user_input.pack(pady=10, padx=10, fill='x')
+        input_frame = ttk.Frame(chat_area)
+        input_frame.pack(fill='x', pady=10)
 
-        ttk.Button(chat_area, text="Send", command=self.send_message).pack()
+        self.user_input = ttk.Entry(input_frame)
+        self.user_input.pack(side='left', fill='x', expand=True)
 
+        ttk.Button(input_frame, text="Attach File", command=self.attach_file).pack(side='left', padx=5)
+        ttk.Button(input_frame, text="Send", command=self.send_message).pack(side='left')
+
+        # Configure text tags
+        self.chat_display.tag_configure('user', foreground='blue')
+        self.chat_display.tag_configure('user_message', foreground='black')
+        self.chat_display.tag_configure('assistant', foreground='green')
+        self.chat_display.tag_configure('assistant_message', foreground='black')
+
+    def apply_style(self):
+        style = ttk.Style()
+        style.theme_use('clam')
+
+        style.configure('.', background='#f0f0f0', foreground='#333333')
+        style.configure('TButton', background='#4CAF50', foreground='white')
+        style.map('TButton', background=[('active', '#45a049')])
+        style.configure('TEntry', fieldbackground='white')
+        style.configure('TCombobox', fieldbackground='white')
+        style.configure('TScale', background='#4CAF50')
+
+        default_font = ('Helvetica', 10)
+        heading_font = ('Helvetica', 12, 'bold')
+        
+        style.configure('.', font=default_font)
+        style.configure('TButton', font=default_font)
+        style.configure('TLabel', font=heading_font)
+
+        self.chat_display.configure(font=default_font, background='white', foreground='#333333')
+        self.conversation_listbox.configure(font=default_font, background='white', foreground='#333333')
+
+    def upload_context_for_rag(self):
+        file_path = filedialog.askopenfilename(filetypes=[
+            ("Text files", "*.txt"),
+            ("Word documents", "*.docx"),
+            ("PDF files", "*.pdf"),
+            ("CSV files", "*.csv")
+        ])
+        if file_path:
+            self.context = self.read_file_content(file_path)
+            self.context_embeddings = self.embeddings_model.encode(self.context.split('.'))
+            messagebox.showinfo("Success", "Context file uploaded successfully for RAG!")
+
+    def attach_file(self):
+        file_path = filedialog.askopenfilename(filetypes=[
+            ("Text files", "*.txt"),
+            ("Word documents", "*.docx"),
+            ("PDF files", "*.pdf"),
+            ("CSV files", "*.csv")
+        ])
+        if file_path:
+            self.attached_file_content = self.read_file_content(file_path)
+            file_name = os.path.basename(file_path)
+            self.user_input.insert(tk.END, f" [Attached: {file_name}]")
+
+    def read_file_content(self, file_path):
+        _, file_extension = os.path.splitext(file_path)
+        
+        if file_extension == '.txt':
+            with open(file_path, 'r', encoding='utf-8') as file:
+                return file.read()
+        elif file_extension == '.docx':
+            return docx2txt.process(file_path)
+        elif file_extension == '.pdf':
+            with open(file_path, 'rb') as file:
+                pdf_reader = PyPDF2.PdfReader(file)
+                return ' '.join(page.extract_text() for page in pdf_reader.pages)
+        elif file_extension == '.csv':
+            with open(file_path, 'r', encoding='utf-8') as file:
+                csv_reader = csv.reader(file)
+                return '\n'.join(','.join(row) for row in csv_reader)
+        else:
+            return "Unsupported file format"
+
+    def send_message(self):
+        if self.is_generating:
+            return
+        
+        user_input = self.user_input.get()
+        if not user_input and not self.attached_file_content:
+            return
+
+        display_message = user_input
+        full_message = user_input
+
+        if self.attached_file_content:
+            display_message += "\n[Attached file content not displayed]"
+            full_message += f"\n\nAttached file content:\n{self.attached_file_content}"
+
+        if self.current_conversation is None:
+            self.new_chat()
+
+        self.conversations[self.current_conversation].append({"role": "user", "content": display_message, "full_content": full_message})
+        self.update_chat_display()
+        self.user_input.delete(0, tk.END)
+
+        model = self.model_combobox.get()
+        if model != "Select a model":
+            threading.Thread(target=self.get_model_response, args=(model, full_message)).start()
+
+        self.attached_file_content = None  # Reset after sending
+        
     def get_ollama_models(self):
         try:
             response = requests.get("http://localhost:11434/api/tags")
@@ -70,33 +211,38 @@ class LLMPlayground:
         self.chat_display.config(state='normal')
         self.chat_display.delete('1.0', tk.END)
         for message in self.conversations.get(self.current_conversation, []):
-            self.chat_display.insert(tk.END, f"{message['role'].capitalize()}: {message['content']}\n\n")
+            if message['role'] == 'user':
+                self.chat_display.insert(tk.END, f"User: ", 'user')
+                self.chat_display.insert(tk.END, f"{message['content']}\n\n", 'user_message')
+            else:
+                self.chat_display.insert(tk.END, f"Assistant: ", 'assistant')
+                self.chat_display.insert(tk.END, f"{message['content']}\n\n", 'assistant_message')
         self.chat_display.config(state='disabled')
         self.chat_display.see(tk.END)
 
-    def send_message(self):
-        user_input = self.user_input.get()
-        if not user_input or not self.current_conversation:
-            return
-
-        self.conversations[self.current_conversation].append({"role": "user", "content": user_input})
-        self.update_chat_display()
-        self.user_input.delete(0, tk.END)
-
-        model = self.model_combobox.get()
-        if model != "Select a model":
-            threading.Thread(target=self.get_model_response, args=(model, user_input)).start()
-
     def get_model_response(self, model, prompt):
+        self.is_generating = True
+        self.user_input.config(state='disabled')
+        
+        self.chat_display.config(state='normal')
+        self.chat_display.insert(tk.END, "Assistant: Generating response...\n", 'assistant')
+        self.chat_display.config(state='disabled')
+        self.chat_display.see(tk.END)
+
         try:
+            context = self.get_relevant_context(prompt)
+            
             url = "http://localhost:11434/api/generate"
             data = {
                 "model": model,
-                "prompt": prompt
+                "prompt": f"Context: {context}\n\nUser: {prompt}",
+                "temperature": self.temperature_scale.get(),
+                "max_tokens": int(self.max_tokens_entry.get())
             }
-            response = requests.post(url, json=data, stream=True)
             
+            response = requests.post(url, json=data, stream=True)
             full_response = ""
+            
             for line in response.iter_lines():
                 if line:
                     json_response = json.loads(line)
@@ -108,23 +254,82 @@ class LLMPlayground:
             self.conversations[self.current_conversation].append({"role": "assistant", "content": full_response})
             self.master.after(0, self.update_chat_display)
         except requests.exceptions.RequestException as e:
-            print(f"Error: {e}")
-            self.master.after(0, self.show_error, str(e))
+            self.master.after(0, self.show_error_popup, str(e))
+        finally:
+            self.is_generating = False
+            self.user_input.config(state='normal')
+
 
     def update_response(self, response_so_far):
         self.chat_display.config(state='normal')
         self.chat_display.delete('1.0', tk.END)
         for message in self.conversations[self.current_conversation]:
-            self.chat_display.insert(tk.END, f"{message['role'].capitalize()}: {message['content']}\n\n")
-        self.chat_display.insert(tk.END, f"Assistant: {response_so_far}")
+            if message['role'] == 'user':
+                self.chat_display.insert(tk.END, f"User: ", 'user')
+                self.chat_display.insert(tk.END, f"{message['content']}\n\n", 'user_message')
+            else:
+                self.chat_display.insert(tk.END, f"Assistant: ", 'assistant')
+                self.chat_display.insert(tk.END, f"{message['content']}\n\n", 'assistant_message')
+        self.chat_display.insert(tk.END, f"Assistant: {response_so_far}", 'assistant_message')
         self.chat_display.config(state='disabled')
         self.chat_display.see(tk.END)
 
-    def show_error(self, error_message):
-        self.chat_display.config(state='normal')
-        self.chat_display.insert(tk.END, f"Error: {error_message}\n\n")
-        self.chat_display.config(state='disabled')
-        self.chat_display.see(tk.END)
+    def show_error_popup(self, error_message):
+        messagebox.showerror("Error", error_message)
+
+    def get_relevant_context(self, query, top_k=3):
+        if self.context_embeddings is None:
+            return ""
+        
+        query_embedding = self.embeddings_model.encode([query])
+        similarities = cosine_similarity(query_embedding, self.context_embeddings)[0]
+        top_indices = np.argsort(similarities)[-top_k:]
+        
+        relevant_sentences = [self.context.split('.')[i] for i in top_indices]
+        return ' '.join(relevant_sentences)
+
+    def save_conversations(self):
+        file_path = filedialog.asksaveasfilename(defaultextension=".pkl")
+        if file_path:
+            with open(file_path, 'wb') as file:
+                pickle.dump(self.conversations, file)
+            messagebox.showinfo("Success", "Conversations saved successfully!")
+
+    def load_conversations(self):
+        file_path = filedialog.askopenfilename(filetypes=[("Pickle files", "*.pkl")])
+        if file_path:
+            with open(file_path, 'rb') as file:
+                self.conversations = pickle.load(file)
+            self.conversation_listbox.delete(0, tk.END)
+            for chat_name in self.conversations.keys():
+                self.conversation_listbox.insert(tk.END, chat_name)
+            messagebox.showinfo("Success", "Conversations loaded successfully!")
+
+    def clear_chat_history(self):
+        if self.current_conversation:
+            self.conversations[self.current_conversation] = []
+            self.update_chat_display()
+            messagebox.showinfo("Success", "Chat history cleared!")
+
+    def chunk_and_truncate(self, text, max_tokens=8192):
+        words = text.split()
+        chunks = []
+        current_chunk = []
+        current_token_count = 0
+
+        for word in words:
+            if current_token_count + len(word.split()) > max_tokens:
+                chunks.append(' '.join(current_chunk))
+                current_chunk = [word]
+                current_token_count = len(word.split())
+            else:
+                current_chunk.append(word)
+                current_token_count += len(word.split())
+
+        if current_chunk:
+            chunks.append(' '.join(current_chunk))
+
+        return chunks
 
 if __name__ == "__main__":
     root = tk.Tk()
