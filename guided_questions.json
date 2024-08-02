@@ -1,83 +1,194 @@
 {
+  "General": {
+    "type": "open",
+    "questions": [
+      {
+        "question": "Please provide a general overview of the document.",
+        "type": "open"
+      }
+    ]
+  },
+  "Program Requirements Summary": {
+    "type": "section",
+    "questions": []
+  },
+  "Regulation Publication Date": {
+    "type": "section",
+    "questions": []
+  },
+  "Enforcement Date": {
+    "type": "section",
+    "questions": []
+  },
+  "Enforcement based on": {
+    "type": "section",
+    "questions": []
+  },
+  "Compliance Checkpoint": {
+    "type": "section",
+    "questions": []
+  },
+  "Regulation Status": {
+    "type": "section",
+    "questions": []
+  },
+  "Current process": {
+    "type": "section",
+    "questions": []
+  },
+  "Changes from current process": {
+    "type": "section",
+    "questions": []
+  },
+  "Key Details \u00e2\u20ac\u201c Legislation Requirement": {
+    "type": "section",
+    "questions": []
+  },
+  "Requirement": {
+    "type": "section",
+    "questions": []
+  },
+  "Dependency": {
+    "type": "section",
+    "questions": []
+  },
+  "Details of Requirement": {
+    "type": "section",
+    "questions": []
+  },
+  "Wireless Technology Scope": {
+    "type": "section",
+    "questions": []
+  },
+  "Detail Requirements": {
+    "type": "section",
+    "questions": []
+  },
   "Fields": {
-    "type": "checkbox",
-    "options": [
-      "EMC",
-      "Safety",
-      "Wireless",
-      "Telecom/PSTN",
-      "Materials",
-      "Energy",
-      "Packaging",
-      "Cybersecurity",
-      "US Federal",
-      "Others"
+    "type": "section",
+    "questions": [
+      {
+        "question": "What fields does this document impact?",
+        "type": "checkbox",
+        "options": [
+          "EMC",
+          "Safety",
+          "Wireless",
+          "Telecom/PSTN",
+          "Materials",
+          "Energy",
+          "Packaging",
+          "Cybersecurity",
+          "US Federal",
+          "Others"
+        ]
+      }
     ]
   },
   "Impacts": {
-    "type": "checkbox",
-    "options": [
-      "Certification / DOC/ Registration",
-      "New/ Revision",
-      "Regulatory Filing",
-      "Design Change",
-      "Component impact",
-      "Cost impact",
-      "Factory inspection",
-      "Label \u00e2\u20ac\u201c New/ Revised Packaging Label",
-      "Logistics",
-      "Product Label",
-      "Product Documentation/Web",
-      "Producer Responsibility/ EDPs",
-      "RQA Revision /Creation",
-      "Specification Revision/ Creation",
-      "Supply Chain",
-      "Testing",
-      "Trade Compliance",
-      "Configuration Restriction",
-      "Sales Operation",
-      "Services (Product/Operation/Logistics)",
-      "Annual Report",
-      "TBD"
+    "type": "section",
+    "questions": [
+      {
+        "question": "What impacts does this document have?",
+        "type": "checkbox",
+        "options": [
+          "Certification / DOC/ Registration",
+          "New/ Revision",
+          "Regulatory Filing",
+          "Design Change",
+          "Component impact",
+          "Cost impact",
+          "Factory inspection",
+          "Label \u00e2\u20ac\u201c New/ Revised Packaging Label",
+          "Logistics",
+          "Product Label",
+          "Product Documentation/Web",
+          "Producer Responsibility/ EDPs",
+          "RQA Revision /Creation",
+          "Specification Revision/ Creation",
+          "Supply Chain",
+          "Testing",
+          "Trade Compliance",
+          "Configuration Restriction",
+          "Sales Operation",
+          "Services (Product/Operation/Logistics)",
+          "Annual Report",
+          "TBD"
+        ]
+      }
     ]
   },
   "Design Change": {
-    "type": "yesno",
-    "question": "Does it impact product 'Design change'?"
+    "type": "section",
+    "questions": [
+      {
+        "question": "Does it impact product 'Design change'?",
+        "type": "yesno"
+      }
+    ]
   },
   "Label": {
-    "type": "multiple",
-    "question": "Does it impact product 'Label'?",
-    "options": [
-      "Additional statement",
-      "New logo",
-      "Color change",
-      "Others"
+    "type": "section",
+    "questions": [
+      {
+        "question": "Does it impact product 'Label'?",
+        "type": "multiple",
+        "options": [
+          "Additional statement",
+          "New logo",
+          "Color change",
+          "Others"
+        ]
+      }
     ]
   },
   "Packaging": {
-    "type": "multiple",
-    "question": "Does it impact 'Packaging'?",
-    "options": [
-      "Additional statement",
-      "New logo",
-      "Others"
+    "type": "section",
+    "questions": [
+      {
+        "question": "Does it impact 'Packaging'?",
+        "type": "multiple",
+        "options": [
+          "Additional statement",
+          "New logo",
+          "Others"
+        ]
+      }
     ]
   },
   "User Manual (Hard Copy)": {
-    "type": "multiple",
-    "question": "Does it impact 'User manual' (hard copy)?",
-    "options": [
-      "SERI",
-      "QR card"
+    "type": "section",
+    "questions": [
+      {
+        "question": "Does it impact 'User manual' (hard copy)?",
+        "type": "multiple",
+        "options": [
+          "SERI",
+          "QR card"
+        ]
+      }
     ]
   },
   "User Manual (Soft Copy)": {
-    "type": "yesno",
-    "question": "Does it impact 'User manual' (soft copy)?"
+    "type": "section",
+    "questions": [
+      {
+        "question": "Does it impact 'User manual' (soft copy)?",
+        "type": "yesno"
+      }
+    ]
   },
   "Additional Details": {
-    "type": "open",
-    "question": "Please provide any additional details or comments:"
+    "type": "section",
+    "questions": [
+      {
+        "question": "Please provide any additional details or comments:",
+        "type": "open"
+      },
+      {
+        "question": "1?",
+        "type": "yesno"
+      }
+    ]
   }
 }
