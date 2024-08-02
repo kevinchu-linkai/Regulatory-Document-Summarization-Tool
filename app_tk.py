@@ -70,7 +70,7 @@ class LLMPlayground:
         self.conversation_listbox.bind('<<ListboxSelect>>', self.on_conversation_select)
 
         ttk.Label(sidebar, text="Select Ollama Model").pack(pady=5)
-        self.model_combobox = ttk.Combobox(sidebar, values=self.get_ollama_models())
+        self.model_combobox = ttk.Combobox(sidebar, values=self.get_ollama_models(), width=30)
         self.model_combobox.pack(pady=5, padx=5, fill='x')
         if "llama3" in self.model_combobox['values']:
             self.model_combobox.set("llama3")
@@ -226,7 +226,9 @@ class LLMPlayground:
             with open(file_path, 'r', encoding='utf-8') as file:
                 return file.read()
         elif file_extension == '.docx':
-            return docx2txt.process(file_path)
+            content = docx2txt.process(file_path)
+            print(f"Docx content length: {len(content)}")
+            return content
         elif file_extension == '.pdf':
             with open(file_path, 'rb') as file:
                 pdf_reader = PyPDF2.PdfReader(file)
@@ -251,9 +253,9 @@ class LLMPlayground:
         if self.attached_file_content:
             suggested_prompt = self.guided_prompt_creation()
             if suggested_prompt:
-                user_input = suggested_prompt
-                user_input_hide = suggested_prompt
-                user_input_hide += "\nPlease provide a comprehensive summary for a bulletin based on these factors.Pretend that you are a regulatory engineer whose job is to interpret this document into an internal regulatory bulletin for engineers to follow some important compliance guidance, not knowing the punishment for not following. I want the summary be provided with all the following sections, and all of them should be filled in with corresponding information\n" + \
+                user_input += suggested_prompt
+                user_input_hide += suggested_prompt
+                user_input_hide += "\nPlease provide a comprehensive summary for a bulletin based on these factors.Pretend that you are a regulatory engineer whose job is to interpret this document into an internal regulatory bulletin for engineers to follow some important compliance guidance, do not put focus on punishments or penalties. I want the summary be provided with all the following sections, and all of them should be filled in with corresponding information\n" + \
                                 "1)	Program Requirements Summary, a 2-3 sentence, brief summary of the regulation.\n" + \
                                 "2)	Regulation Publication Date, the date the regulation was published.   If regulation has not been published, leave this blank.\n" + \
                                 "3)	Enforcement Date: This is the effective date of the regulation.\n" + \
@@ -295,7 +297,7 @@ class LLMPlayground:
         try:
             response = requests.get("http://localhost:11434/api/tags")
             models = response.json().get("models", [])
-            return [model["name"].split(':')[0] for model in models]
+            return [model["name"] for model in models]  # Return the full model name
         except requests.exceptions.RequestException:
             return []
 
@@ -342,8 +344,12 @@ class LLMPlayground:
                 "model": model,
                 "prompt": f"Context: {context}\n\nUser: {prompt}",
                 "temperature": self.temperature_scale.get(),
+                "options": {
+                    "num_ctx": 8192
+                },
                 "max_tokens": int(self.max_tokens_entry.get())
             }
+            print(f"Prompt length: {len(data['prompt'])}")
             
             response = requests.post(url, json=data, stream=True)
             full_response = ""
@@ -391,7 +397,9 @@ class LLMPlayground:
         top_indices = np.argsort(similarities)[-top_k:]
         
         relevant_sentences = [self.context.split('.')[i] for i in top_indices]
-        return ' '.join(relevant_sentences)
+        context = ' '.join(relevant_sentences)
+        print(f"Relevant context length: {len(context)}")
+        return context
 
     def save_conversations(self):
         file_path = filedialog.asksaveasfilename(defaultextension=".pkl")
