@@ -1,0 +1,99 @@
+{
+  "Fields": {
+    "type": "checkbox",
+    "options": [
+      "EMC",
+      "Safety",
+      "Wireless",
+      "Telecom/PSTN",
+      "Materials",
+      "Energy",
+      "Packaging",
+      "Cybersecurity",
+      "US Federal",
+      "Others"
+    ]
+  },
+  "Impacts": {
+    "type": "checkbox",
+    "options": [
+      "Certification / DOC/ Registration",
+      "New/ Revision",
+      "Regulatory Filing",
+      "Design Change",
+      "Component impact",
+      "Cost impact",
+      "Factory inspection",
+      "Label \u00e2\u20ac\u201c New/ Revised Packaging Label",
+      "Logistics",
+      "Product Label",
+      "Product Documentation/Web",
+      "Producer Responsibility/ EDPs",
+      "RQA Revision /Creation",
+      "Specification Revision/ Creation",
+      "Supply Chain",
+      "Testing",
+      "Trade Compliance",
+      "Configuration Restriction",
+      "Sales Operation",
+      "Services (Product/Operation/Logistics)",
+      "Annual Report",
+      "TBD"
+    ]
+  },
+  "Design Change": {
+    "type": "yesno",
+    "question": "Does it impact product 'Design change'?"
+  },
+  "Label": {
+    "type": "multiple",
+    "question": "Does it impact product 'Label'?",
+    "options": [
+      "Additional statement",
+      "New logo",
+      "Color change",
+      "Others"
+    ]
+  },
+  "Packaging": {
+    "type": "multiple",
+    "question": "Does it impact 'Packaging'?",
+    "options": [
+      "Additional statement",
+      "New logo",
+      "Others"
+    ]
+  },
+  "User Manual (Hard Copy)": {
+    "type": "multiple",
+    "question": "Does it impact 'User manual' (hard copy)?",
+    "options": [
+      "SERI",
+      "QR card"
+    ]
+  },
+  "User Manual (Soft Copy)": {
+    "type": "yesno",
+    "question": "Does it impact 'User manual' (soft copy)?"
+  },
+  "Additional Details": {
+    "type": "open",
+    "question": "Please provide any additional details or comments:"
+  },
+  "Detail Requirement": {
+    "type": "checkbox",
+    "options": [
+      "1",
+      "2",
+      "3",
+      "4",
+      "1",
+      "2",
+      "3"
+    ]
+  },
+  "cool": {
+    "type": "checkbox",
+    "options": []
+  }
+}
