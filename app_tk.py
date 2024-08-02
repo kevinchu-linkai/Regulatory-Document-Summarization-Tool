@@ -3,6 +3,7 @@ from tkinter import ttk, scrolledtext, filedialog, messagebox, simpledialog
 import requests
 import json
 import threading
+import bcrypt
 import os
 import pickle
 from sentence_transformers import SentenceTransformer
@@ -16,6 +17,8 @@ import io
 class CheckboxDialog(tk.Toplevel):
     def __init__(self, parent, title, options):
         super().__init__(parent)
+        self.new_section_entry = tk.Text(add_section_frame, height=3, width=30, wrap=tk.WORD)
+        self.new_section_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
         self.title(title)
         self.result = []
         
@@ -26,13 +29,258 @@ class CheckboxDialog(tk.Toplevel):
             self.result.append((option, var))
         
         ttk.Button(self, text="OK", command=self.destroy).pack(pady=10)
+        
+# Add this class for tooltips
+class CreateToolTip(object):
+    def __init__(self, widget, text='widget info'):
+        self.widget = widget
+        self.text = text
+        self.widget.bind("<Enter>", self.enter)
+        self.widget.bind("<Leave>", self.close)
 
+    def enter(self, event=None):
+        x = self.widget.winfo_rootx() + self.widget.winfo_width()
+        y = self.widget.winfo_rooty() + self.widget.winfo_height()//2
+        # creates a toplevel window
+        self.tw = tk.Toplevel(self.widget)
+        # Leaves only the label and removes the app window
+        self.tw.wm_overrideredirect(True)
+        self.tw.wm_geometry(f"+{x}+{y}")
+        label = tk.Label(self.tw, text=self.text, justify='left',
+                       background='yellow', relief='solid', borderwidth=1,
+                       font=("times", "8", "normal"))
+        label.pack(ipadx=1)
+
+    def close(self, event=None):
+        if hasattr(self, 'tw'):
+            self.tw.destroy()
+            del self.tw
+        
+class QuestionManager(tk.Toplevel):
+    def __init__(self, parent, app):
+        super().__init__(parent)
+        self.app = app
+        self.title("Question Manager")
+        self.geometry("800x600")  # Set a minimum size
+        self.minsize(800, 600)    # Prevent resizing smaller than this
+        self.create_widgets()
+
+    def create_widgets(self):
+        # Left side: Section list
+        left_frame = ttk.Frame(self)
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self.section_listbox = tk.Listbox(left_frame, width=30)
+        self.section_listbox.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self.section_listbox.bind('<<ListboxSelect>>', self.on_section_select)
+        CreateToolTip(self.section_listbox, "List of sections")
+
+        add_section_frame = ttk.Frame(left_frame)
+        add_section_frame.pack(side=tk.BOTTOM, fill=tk.X)
+        self.new_section_entry = tk.Text(add_section_frame, height=3, width=30, wrap=tk.WORD)
+        self.new_section_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        CreateToolTip(self.new_section_entry, "Enter new section name")
+        ttk.Button(add_section_frame, text="Add Section", command=self.add_section).pack(side=tk.RIGHT)
+
+        # Right side: Question management
+        right_frame = ttk.Frame(self)
+        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+
+        self.question_listbox = tk.Listbox(right_frame)
+        self.question_listbox.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        CreateToolTip(self.question_listbox, "List of questions in selected section")
+
+        button_frame = ttk.Frame(right_frame)
+        button_frame.pack(side=tk.BOTTOM, fill=tk.X)
+        ttk.Button(button_frame, text="Add Question", command=self.add_question).pack(side=tk.LEFT)
+        ttk.Button(button_frame, text="Edit Question", command=self.edit_question).pack(side=tk.LEFT)
+        ttk.Button(button_frame, text="Remove Question", command=self.remove_question).pack(side=tk.LEFT)
+
+    def load_questions(self):
+        try:
+            with open('guided_questions.json', 'r') as f:
+                self.app.guided_questions = json.load(f)
+            self.populate_sections()
+        except FileNotFoundError:
+            messagebox.showerror("Error", "Questions file not found. Creating a new one.")
+            self.app.guided_questions = {}
+        except json.JSONDecodeError:
+            messagebox.showerror("Error", "Invalid JSON in questions file.")
+
+    def save_questions(self):
+        try:
+            with open('guided_questions.json', 'w') as f:
+                json.dump(self.app.guided_questions, f, indent=2)
+            messagebox.showinfo("Success", "Questions saved successfully!")
+        except IOError:
+            messagebox.showerror("Error", "Failed to save questions.")
+
+    def populate_sections(self):
+        self.section_listbox.delete(0, tk.END)
+        for section in self.app.guided_questions.keys():
+            self.section_listbox.insert(tk.END, section)
+
+    def on_section_select(self, event):
+        self.populate_questions()
+
+    def populate_questions(self):
+        selected = self.section_listbox.curselection()
+        if not selected:
+            return
+        section = self.section_listbox.get(selected[0])
+        self.question_listbox.delete(0, tk.END)
+        
+        section_data = self.app.guided_questions[section]
+        if section_data['type'] in ['checkbox', 'multiple']:
+            for question in section_data.get('options', []):
+                self.question_listbox.insert(tk.END, question)
+        elif section_data['type'] in ['yesno', 'open']:
+            question = section_data.get('question', '')
+            self.question_listbox.insert(tk.END, question)
+
+    def add_section(self):
+        new_section = self.new_section_entry.get('1.0', tk.END).strip()
+        if new_section and new_section not in self.app.guided_questions:
+            self.app.guided_questions[new_section] = {'type': 'checkbox', 'options': []}
+            self.populate_sections()
+            self.new_section_entry.delete('1.0', tk.END)
+            self.save_questions()
+
+    def add_question(self):
+        selected = self.section_listbox.curselection()
+        if not selected:
+            messagebox.showwarning("Warning", "Please select a section first.")
+            return
+        
+        section = self.section_listbox.get(selected[0])
+        question_types = ['checkbox', 'yesno', 'multiple', 'open']
+        question_type = simpledialog.askstring("Question Type", "Select question type:",
+                                               initialvalue=self.app.guided_questions[section]['type'])
+        
+        if question_type not in question_types:
+            messagebox.showwarning("Warning", "Invalid question type.")
+            return
+        
+        self.app.guided_questions[section]['type'] = question_type
+        
+        if question_type in ['checkbox', 'multiple']:
+            options = []
+            while True:
+                option = simpledialog.askstring("Option", "Enter an option (or cancel to finish):")
+                if option:
+                    options.append(option)
+                else:
+                    break
+            if 'options' not in self.app.guided_questions[section]:
+                self.app.guided_questions[section]['options'] = []
+            self.app.guided_questions[section]['options'].extend(options)
+        elif question_type in ['yesno', 'open']:
+            question = simpledialog.askstring("Question", "Enter the question:")
+            if question:
+                self.app.guided_questions[section]['question'] = question
+        
+        self.populate_questions()
+        self.save_questions()
+
+    def edit_question(self):
+        selected_section = self.section_listbox.curselection()
+        selected_question = self.question_listbox.curselection()
+        if not selected_section or not selected_question:
+            messagebox.showwarning("Warning", "Please select a section and a question to edit.")
+            return
+        
+        section = self.section_listbox.get(selected_section[0])
+        question_index = selected_question[0]
+        section_data = self.app.guided_questions[section]
+        
+        if section_data['type'] in ['checkbox', 'multiple']:
+            old_question = section_data['options'][question_index]
+            new_question = simpledialog.askstring("Edit Option", "Enter new option:", initialvalue=old_question)
+            if new_question:
+                section_data['options'][question_index] = new_question
+        elif section_data['type'] in ['yesno', 'open']:
+            old_question = section_data['question']
+            new_question = simpledialog.askstring("Edit Question", "Enter new question:", initialvalue=old_question)
+            if new_question:
+                section_data['question'] = new_question
+        
+        self.populate_questions()
+        self.save_questions()
+
+    def remove_question(self):
+        selected_section = self.section_listbox.curselection()
+        selected_question = self.question_listbox.curselection()
+        if not selected_section or not selected_question:
+            messagebox.showwarning("Warning", "Please select a section and a question to remove.")
+            return
+        
+        section = self.section_listbox.get(selected_section[0])
+        question_index = selected_question[0]
+        section_data = self.app.guided_questions[section]
+        
+        if messagebox.askyesno("Confirm", "Are you sure you want to remove this question?"):
+            if section_data['type'] in ['checkbox', 'multiple']:
+                del section_data['options'][question_index]
+            elif section_data['type'] in ['yesno', 'open']:
+                section_data['question'] = ''
+            self.populate_questions()
+            self.save_questions()
+        
+class AdminSection:
+    def __init__(self, master, app):
+        self.master = master
+        self.app = app
+        self.create_widgets()
+
+    def create_widgets(self):
+        self.password_entry = ttk.Entry(self.master, show="*")
+        self.password_entry.pack(pady=10)
+        ttk.Button(self.master, text="Login", command=self.login).pack()
+
+    def login(self):
+        if self.app.verify_password(self.password_entry.get()):
+            self.show_admin_panel()
+        else:
+            messagebox.showerror("Error", "Incorrect password")
+
+    def show_admin_panel(self):
+        for widget in self.master.winfo_children():
+            widget.destroy()
+
+        ttk.Button(self.master, text="Manage Questions", command=self.manage_questions).pack(pady=10)
+        ttk.Button(self.master, text="Change Password", command=self.change_password).pack(pady=10)
+        ttk.Button(self.master, text="Save Changes", command=self.save_changes).pack(pady=10)
+
+    def manage_questions(self):
+        QuestionManager(self.master, self.app)
+
+    def change_password(self):
+        old_password = simpledialog.askstring("Input", "Enter current password:", show="*")
+        if self.app.verify_password(old_password):
+            new_password = simpledialog.askstring("Input", "Enter new password:", show="*")
+            if new_password:
+                confirm_password = simpledialog.askstring("Input", "Confirm new password:", show="*")
+                if new_password == confirm_password:
+                    self.app.save_password(new_password)
+                    self.app.load_password()  # Reload the password after saving
+                    messagebox.showinfo("Success", "Password changed successfully!")
+                else:
+                    messagebox.showerror("Error", "Passwords do not match")
+        else:
+            messagebox.showerror("Error", "Incorrect current password")
+
+    def save_changes(self):
+        self.app.save_questions()
+        messagebox.showinfo("Success", "Changes saved successfully!")
+        
 class LLMPlayground:
     def __init__(self, master):
         self.master = master
         master.title("LLM Playground")
         master.geometry("1200x800")
-
+        
+        self.guided_questions = {}
+        self.load_questions()
         self.conversations = {}
         self.current_conversation = None
         self.context = ""
@@ -44,7 +292,46 @@ class LLMPlayground:
 
         self.create_widgets()
         self.apply_style()
+        self.admin_password_hash = None
+        self.load_password()
+        
+    def save_password(self, password):
+        salt = bcrypt.gensalt()
+        hashed = bcrypt.hashpw(password.encode('utf-8'), salt)
+        with open('admin_password.hash', 'wb') as f:
+            f.write(hashed)
 
+    def load_password(self):
+        try:
+            with open('admin_password.hash', 'rb') as f:
+                self.admin_password_hash = f.read()
+        except FileNotFoundError:
+            # If the file doesn't exist, set a default password
+            default_password = "admin_password"
+            self.save_password(default_password)
+            self.load_password()
+
+    def verify_password(self, password):
+        return bcrypt.checkpw(password.encode('utf-8'), self.admin_password_hash)
+        
+    def load_questions(self):
+        try:
+            with open('guided_questions.json', 'r') as f:
+                self.guided_questions = json.load(f)
+        except FileNotFoundError:
+            # If the file doesn't exist, use default questions
+            self.guided_questions = {
+                "Fields": {
+                    "type": "checkbox",
+                    "options": ["EMC", "Safety", "Wireless", "Telecom/PSTN", "Materials", "Energy", "Packaging", "Cybersecurity", "US Federal", "Others"]
+                },
+                "Impacts": {
+                    "type": "checkbox",
+                    "options": ["Certification / DOC/ Registration", "New/ Revision", "Regulatory Filing", "Design Change", "Component impact", "Cost impact", "Factory inspection", "Label – New/ Revised Packaging Label", "Logistics", "Product Label", "Product Documentation/Web", "Producer Responsibility/ EDPs", "RQA Revision /Creation", "Specification Revision/ Creation", "Supply Chain", "Testing", "Trade Compliance", "Configuration Restriction", "Sales Operation", "Services (Product/Operation/Logistics)", "Annual Report", "TBD"]
+                },
+                # ... add other default questions here ...
+            }
+        
     def create_widgets(self):
         # Create main frame
         main_frame = ttk.Frame(self.master)
@@ -63,6 +350,7 @@ class LLMPlayground:
         ttk.Button(sidebar, text="Save Conversations", command=self.save_conversations).pack(pady=5, fill='x')
         ttk.Button(sidebar, text="Load Conversations", command=self.load_conversations).pack(pady=5, fill='x')
         ttk.Button(sidebar, text="Clear Chat History", command=self.clear_chat_history).pack(pady=5, fill='x')
+        ttk.Button(sidebar, text="Admin Section", command=self.open_admin_section).pack(pady=5, fill='x')
         
         ttk.Label(sidebar, text="Your conversations").pack(pady=5)
         self.conversation_listbox = tk.Listbox(sidebar)
@@ -129,68 +417,48 @@ class LLMPlayground:
         self.chat_display.configure(font=default_font, background='white', foreground='#333333')
         self.conversation_listbox.configure(font=default_font, background='white', foreground='#333333')
 
+    def open_admin_section(self):
+        admin_window = tk.Toplevel(self.master)
+        admin_window.title("Admin Section")
+        AdminSection(admin_window, self)
+    
     def guided_prompt_creation(self):
         print("Starting guided prompt creation...")
-        # Field checkboxes
-        fields = [
-            "EMC", "Safety", "Wireless", "Telecom/PSTN", "Materials", "Energy",
-            "Packaging", "Cybersecurity", "US Federal", "Others"
-        ]
-        field_dialog = CheckboxDialog(self.master, "Select Fields", fields)
-        self.master.wait_window(field_dialog)
-        selected_fields = [option for option, var in field_dialog.result if var.get()]
-
-        # Impact checkboxes
-        impacts = [
-            "Certification / DOC/ Registration", "New/ Revision", "Regulatory Filing",
-            "Design Change", "Component impact", "Cost impact", "Factory inspection",
-            "Label – New/ Revised Packaging Label", "Logistics", "Product Label",
-            "Product Documentation/Web", "Producer Responsibility/ EDPs",
-            "RQA Revision /Creation", "Specification Revision/ Creation", "Supply Chain",
-            "Testing", "Trade Compliance", "Configuration Restriction", "Sales Operation",
-            "Services (Product/Operation/Logistics)", "Annual Report", "TBD"
-        ]
-        impact_dialog = CheckboxDialog(self.master, "Select Impacts", impacts)
-        self.master.wait_window(impact_dialog)
-        selected_impacts = [option for option, var in impact_dialog.result if var.get()]
-
-        # General and Sub-Questions
         answers = {}
-        
-        def ask_sub_questions(main_question, sub_questions):
-            if messagebox.askyesno("Question", main_question):
-                for sub_q in sub_questions:
-                    if isinstance(sub_q, tuple):
-                        sub_dialog = CheckboxDialog(self.master, sub_q[0], sub_q[1])
-                        self.master.wait_window(sub_dialog)
-                        answers[sub_q[0]] = [option for option, var in sub_dialog.result if var.get()]
-                    else:
-                        answer = messagebox.askyesno("Sub-Question", sub_q)
-                        answers[sub_q] = "Yes" if answer else "No"
-            else:
-                answers[main_question] = "No"
 
-        ask_sub_questions("Does it impact product 'Design change'?", [])
-        ask_sub_questions("Does it impact product 'Label'?", 
-                        [("Label changes:", ["Additional statement", "New logo", "Color change", "Others"])])
-        ask_sub_questions("Does it impact 'Packaging'?", 
-                        [("Packaging changes:", ["Additional statement", "New logo", "Others"])])
-        ask_sub_questions("Does it impact 'User manual' (hard copy)?", 
-                        [("Hard copy changes:", ["SERI", "QR card"])])
-        ask_sub_questions("Does it impact 'User manual' (soft copy)?", 
-                        ["Website (JIRA - e.g. TW RoHS Table)", 
-                        "Documentation (dell.com – e.g. owner's manual, service manual)"])
+        for section, data in self.guided_questions.items():
+            if data['type'] == 'checkbox':
+                dialog = CheckboxDialog(self.master, section, data['options'])
+                self.master.wait_window(dialog)
+                answers[section] = [option for option, var in dialog.result if var.get()]
+            
+            elif data['type'] == 'yesno':
+                answer = messagebox.askyesno(section, data['question'])
+                answers[section] = "Yes" if answer else "No"
+            
+            elif data['type'] == 'multiple':
+                if messagebox.askyesno(section, data['question']):
+                    dialog = CheckboxDialog(self.master, f"{section} options", data['options'])
+                    self.master.wait_window(dialog)
+                    answers[section] = [option for option, var in dialog.result if var.get()]
+                else:
+                    answers[section] = "No"
+            
+            elif data['type'] == 'open':
+                answer = simpledialog.askstring(section, data['question'])
+                if answer:
+                    answers[section] = answer
 
         # Construct the suggested prompt
         suggested_prompt = "Please summarize the attached document with the following considerations:\n\n"
-        suggested_prompt += f"Fields: {', '.join(selected_fields)}\n\n"
-        suggested_prompt += f"Impacts: {', '.join(selected_impacts)}\n\n"
-        suggested_prompt += "Specific impacts and changes:\n"
-        for question, answer in answers.items():
+        for section, answer in answers.items():
             if isinstance(answer, list):
-                suggested_prompt += f"- {question} {', '.join(answer)}\n"
+                suggested_prompt += f"{section}: {', '.join(answer)}\n"
             else:
-                suggested_prompt += f"- {question} {answer}\n"
+                suggested_prompt += f"{section}: {answer}\n"
+
+        suggested_prompt += "\nPlease provide a comprehensive summary for a bulletin based on these factors. Pretend that you are a regulatory engineer whose job is to interpret this document into an internal regulatory bulletin for engineers to follow some important compliance guidance. Do not focus on punishments or penalties. Please provide the summary with all the following sections, and all of them should be filled in with corresponding information:\n"
+        suggested_prompt += "1) Program Requirements Summary\n2) Regulation Publication Date\n3) Enforcement Date\n4) Enforcement based on\n5) Compliance Checkpoint\n6) Regulation Status\n7) Current process\n8) Changes from current process\n9) Key Details – Legislation Requirement\n10) Requirement\n11) Dependency\n12) Details of Requirement\n13) Wireless Technology Scope\n14) Detail Requirements\n"
 
         print(f"Suggested prompt: {suggested_prompt}")
         return suggested_prompt
@@ -240,59 +508,60 @@ class LLMPlayground:
         else:
             return "Unsupported file format"
 
+    def display_file_briefing(self, file_content, guided_prompt):
+        briefing = f"File Content Preview:\n{file_content[:500]}...\n\nGuided Prompt:\n{guided_prompt}"
+        self.conversations[self.current_conversation].append({"role": "system", "content": briefing})
+        self.update_chat_display()
+
     def send_message(self):
         if self.is_generating:
             return
         
         user_input = self.user_input.get()
-        user_input_hide = user_input
         if not user_input and not self.attached_file_content:
             return
 
-        # Start the guided prompt creation process if a file is attached
         if self.attached_file_content:
             suggested_prompt = self.guided_prompt_creation()
             if suggested_prompt:
                 user_input += suggested_prompt
-                user_input_hide += suggested_prompt
-                user_input_hide += "\nPlease provide a comprehensive summary for a bulletin based on these factors.Pretend that you are a regulatory engineer whose job is to interpret this document into an internal regulatory bulletin for engineers to follow some important compliance guidance, do not put focus on punishments or penalties. I want the summary be provided with all the following sections, and all of them should be filled in with corresponding information\n" + \
-                                "1)	Program Requirements Summary, a 2-3 sentence, brief summary of the regulation.\n" + \
-                                "2)	Regulation Publication Date, the date the regulation was published.   If regulation has not been published, leave this blank.\n" + \
-                                "3)	Enforcement Date: This is the effective date of the regulation.\n" + \
-                                "4)	Enforcement based on: Type of enforcement\n" + \
-                                "5)	Compliance Checkpoint: How is regulation enforced upon entry?\n" + \
-                                "6)	Regulation Status: Type of Regulation Status\n" + \
-                                "7)	What is current process: If a regulation revision, this will be a 2-3 sentence summary of the current process, if it is a new regulation, note that it is new\n" + \
-                                "8)	What has changed from current process:  2-3 sentence summary of what is changing from existing regulation process.  This section is what is used for Bulletin email summaries. Character limit has been increased to 1000. Must ensure Summary in properties reflects same as Bulletin\n" + \
-                                "9)	Key Details – Legislation Requirement: This section is the regulation requirements. What is needed to reach compliance.\n" + \
-                                "10) Requirement: Frequently used Requirements are listed in the table template, add additional requirements as required, and delete those not relevant.\n" + \
-                                "11) Dependency: Is the requirement dependent on another requirement in the table? If so, list the requirement that must be completed to meet the requirement.\n" + \
-                                "12) Details of Requirement: High level explanation of the regulatory requirement\n" + \
-                                "13) Wireless Technology Scope: For Wireless Programs only, leave blank if not related\n" + \
-                                "14) Detail Requirements: This is details of Regulation.  May include some tables and technical detail copied from regulation.  Should not, however be a straight copy/paste.\n" 
+                
+            # Ask if the user wants an AI-generated summary
+            if messagebox.askyesno("AI Summary", "Do you want an AI-generated summary of the attached file?"):
+                threading.Thread(target=self.get_model_response, args=(self.model_combobox.get(), user_input)).start()
+            else:
+                self.display_file_briefing(self.attached_file_content, user_input)
+        else:
+            # Normal message without attachment
+            self.conversations[self.current_conversation].append({"role": "user", "content": user_input})
+            self.update_chat_display()
+            threading.Thread(target=self.get_model_response, args=(self.model_combobox.get(), user_input)).start()
 
-        display_message = user_input
-        full_message = user_input_hide
-
-        if self.attached_file_content:
-            display_message += "\n[Attached file content not displayed]"
-            full_message += f"\n\nAttached file content:\n{self.attached_file_content}"
-            print(full_message)
-
-        if self.current_conversation is None:
-            self.new_chat()
-
-        self.conversations[self.current_conversation].append({"role": "user", "content": display_message, "full_content": full_message})
-        self.update_chat_display()
         self.user_input.delete(0, tk.END)
-
-        model = self.model_combobox.get()
-        if model != "Select a model":
-            threading.Thread(target=self.get_model_response, args=(model, full_message)).start()
-            print(full_message)
-
         self.attached_file_content = None  # Reset after sending
-        
+
+    def save_questions(self):
+        with open('guided_questions.json', 'w') as f:
+            json.dump(self.guided_questions, f)
+
+    def load_questions(self):
+        try:
+            with open('guided_questions.json', 'r') as f:
+                self.guided_questions = json.load(f)
+        except FileNotFoundError:
+            # If the file doesn't exist, use default questions
+            self.guided_questions = {
+                "Fields": {
+                    "type": "checkbox",
+                    "options": ["EMC", "Safety", "Wireless", "Telecom/PSTN", "Materials", "Energy", "Packaging", "Cybersecurity", "US Federal", "Others"]
+                },
+                "Impacts": {
+                    "type": "checkbox",
+                    "options": ["Certification / DOC/ Registration", "New/ Revision", "Regulatory Filing", "Design Change", "Component impact", "Cost impact", "Factory inspection", "Label – New/ Revised Packaging Label", "Logistics", "Product Label", "Product Documentation/Web", "Producer Responsibility/ EDPs", "RQA Revision /Creation", "Specification Revision/ Creation", "Supply Chain", "Testing", "Trade Compliance", "Configuration Restriction", "Sales Operation", "Services (Product/Operation/Logistics)", "Annual Report", "TBD"]
+                },
+                # ... add other default questions here ...
+            }
+
     def get_ollama_models(self):
         try:
             response = requests.get("http://localhost:11434/api/tags")
