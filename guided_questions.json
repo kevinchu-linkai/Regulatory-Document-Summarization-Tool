@@ -79,21 +79,5 @@
   "Additional Details": {
     "type": "open",
     "question": "Please provide any additional details or comments:"
-  },
-  "Detail Requirement": {
-    "type": "checkbox",
-    "options": [
-      "1",
-      "2",
-      "3",
-      "4",
-      "1",
-      "2",
-      "3"
-    ]
-  },
-  "cool": {
-    "type": "checkbox",
-    "options": []
   }
 }
