@@ -14,6 +14,99 @@ import PyPDF2
 import csv
 import io
 
+class QuestionDialog(tk.Toplevel):
+    def __init__(self, parent, title, question_data=None):
+        super().__init__(parent)
+        self.title(title)
+        self.geometry("400x400")
+        self.resizable(False, False)
+        
+        self.question_data = question_data or {}
+        self.result = None
+        
+        self.create_widgets()
+        
+    def create_widgets(self):
+        # Question type
+        ttk.Label(self, text="Question Type:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        self.type_var = tk.StringVar(value=self.question_data.get('type', 'checkbox'))
+        type_combo = ttk.Combobox(self, textvariable=self.type_var, values=['checkbox', 'yesno', 'multiple', 'open'])
+        type_combo.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+        type_combo.bind("<<ComboboxSelected>>", self.on_type_change)
+        
+        # Question text
+        ttk.Label(self, text="Question:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
+        self.question_entry = ttk.Entry(self, width=40)
+        self.question_entry.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
+        self.question_entry.insert(0, self.question_data.get('question', ''))
+        
+        # Options frame (for checkbox and multiple)
+        self.options_frame = ttk.LabelFrame(self, text="Options")
+        self.options_frame.grid(row=2, column=0, columnspan=2, padx=5, pady=5, sticky="nsew")
+        
+        # Add option button
+        self.add_option_button = ttk.Button(self, text="Add Option", command=self.add_option)
+        self.add_option_button.grid(row=3, column=0, columnspan=2, padx=5, pady=5)
+        
+        # Save button
+        ttk.Button(self, text="Save", command=self.save).grid(row=4, column=0, columnspan=2, padx=5, pady=5)
+        
+        self.option_entries = []
+        if 'options' in self.question_data:
+            for option in self.question_data['options']:
+                self.add_option(option)
+        
+        self.on_type_change()
+        
+    def on_type_change(self, event=None):
+        question_type = self.type_var.get()
+        if question_type in ['checkbox', 'multiple']:
+            self.options_frame.grid()
+            self.add_option_button.grid()
+        else:
+            self.options_frame.grid_remove()
+            self.add_option_button.grid_remove()
+        
+    def add_option(self, option_text=''):
+        row = len(self.option_entries)
+        entry = ttk.Entry(self.options_frame, width=30)
+        entry.grid(row=row, column=0, padx=5, pady=2, sticky="ew")
+        entry.insert(0, option_text)
+        
+        remove_btn = ttk.Button(self.options_frame, text="X", width=2, 
+                                command=lambda: self.remove_option(entry, remove_btn))
+        remove_btn.grid(row=row, column=1, padx=2, pady=2)
+        
+        self.option_entries.append((entry, remove_btn))
+        
+    def remove_option(self, entry, button):
+        entry.destroy()
+        button.destroy()
+        self.option_entries.remove((entry, button))
+        self.options_frame.grid_columnconfigure(0, weight=1)
+        
+    def save(self):
+        question_type = self.type_var.get()
+        question_text = self.question_entry.get().strip()
+        
+        if not question_text:
+            messagebox.showwarning("Warning", "Question text cannot be empty.")
+            return
+        
+        self.result = {
+            'type': question_type,
+            'question': question_text
+        }
+        
+        if question_type in ['checkbox', 'multiple']:
+            options = [entry.get().strip() for entry, _ in self.option_entries if entry.get().strip()]
+            if len(options) < 2:
+                messagebox.showwarning("Warning", "Please add at least two options.")
+                return
+            self.result['options'] = options
+        
+        self.destroy()
+
 class GuidedQuestionDialog(tk.Toplevel):
     def __init__(self, parent, title, question_data):
         super().__init__(parent)
@@ -127,11 +220,10 @@ class QuestionManager(tk.Toplevel):
         super().__init__(parent)
         self.app = app
         self.title("Question Manager")
-        self.geometry("800x600")  # Set a minimum size
-        self.minsize(800, 600)    # Prevent resizing smaller than this
+        self.geometry("800x600")
+        self.minsize(800, 600)
+        self.current_section = None
         self.create_widgets()
-        
-        # Load and display existing questions from JSON
         self.load_questions()
         self.populate_sections()
 
@@ -183,28 +275,19 @@ class QuestionManager(tk.Toplevel):
         # Automatically select the first section, if available
         if self.section_listbox.size() > 0:
             self.section_listbox.selection_set(0)
-            self.on_section_select(None)  # Populate questions for the first section
+            self.on_section_select(None)
 
     def on_section_select(self, event):
-        self.populate_questions()
+        selected = self.section_listbox.curselection()
+        if selected:
+            self.current_section = self.section_listbox.get(selected[0])
+            self.populate_questions()
 
     def populate_questions(self):
-        selected = self.section_listbox.curselection()
-        if not selected:
-            return
-        section = self.section_listbox.get(selected[0])
-        
-        # Safely handle the missing 'questions' key
-        if 'questions' not in self.app.guided_questions[section]:
-            self.app.guided_questions[section]['questions'] = []
-
         self.question_listbox.delete(0, tk.END)
-        for question in self.app.guided_questions[section]['questions']:
-            # Check for missing 'question' key
-            if 'question' in question:
+        if self.current_section and 'questions' in self.app.guided_questions[self.current_section]:
+            for question in self.app.guided_questions[self.current_section]['questions']:
                 self.question_listbox.insert(tk.END, question['question'])
-            else:
-                self.question_listbox.insert(tk.END, "<No question text>")
 
     def add_section(self):
         new_section = self.new_section_entry.get('1.0', tk.END).strip()
@@ -212,136 +295,73 @@ class QuestionManager(tk.Toplevel):
             self.app.guided_questions[new_section] = {'type': 'section', 'questions': []}
             self.populate_sections()
             self.new_section_entry.delete('1.0', tk.END)
-            self.save_questions()
-
+            self.app.save_questions()
 
     def remove_section(self):
-        selected_section = self.section_listbox.curselection()
-        if not selected_section:
+        if not self.current_section:
             messagebox.showwarning("Warning", "Please select a section to remove.")
             return
         
-        section = self.section_listbox.get(selected_section[0])
-        if messagebox.askyesno("Confirm", f"Are you sure you want to remove the section '{section}'?"):
-            del self.app.guided_questions[section]
+        if messagebox.askyesno("Confirm", f"Are you sure you want to remove the section '{self.current_section}'?"):
+            del self.app.guided_questions[self.current_section]
+            self.current_section = None
             self.populate_sections()
             self.populate_questions()
-            self.save_questions()
+            self.app.save_questions()
 
     def add_question(self):
-        selected = self.section_listbox.curselection()
-        if not selected:
+        if not self.current_section:
             messagebox.showwarning("Warning", "Please select a section first.")
             return
         
-        section = self.section_listbox.get(selected[0])
-        question_types = ['checkbox', 'yesno', 'multiple', 'open']
+        dialog = QuestionDialog(self, "Add Question")
+        self.wait_window(dialog)
         
-        # Create a new window for adding a question
-        add_question_window = tk.Toplevel(self)
-        add_question_window.title("Add Question")
-        add_question_window.geometry("300x200")
-        
-        tk.Label(add_question_window, text="Select Question Type:").pack(pady=5)
-        question_type_var = tk.StringVar()
-        question_type_combobox = ttk.Combobox(add_question_window, textvariable=question_type_var, values=question_types)
-        question_type_combobox.pack(pady=5)
-        
-        tk.Label(add_question_window, text="Enter Question:").pack(pady=5)
-        question_entry = ttk.Entry(add_question_window)
-        question_entry.pack(pady=5)
-        
-        def save_question():
-            question_type = question_type_var.get()
-            if question_type not in question_types:
-                messagebox.showwarning("Warning", "Invalid question type.")
-                return
-            
-            new_question = {
-                "question": question_entry.get().strip(),
-                "type": question_type
-            }
-            
-            if question_type in ['checkbox', 'multiple']:
-                options = []
-                while True:
-                    option = simpledialog.askstring("Option", "Enter an option (or cancel to finish):")
-                    if option:
-                        options.append(option)
-                    else:
-                        break
-                new_question['options'] = options
-            
-            self.app.guided_questions[section]['questions'].append(new_question)
+        if dialog.result:
+            self.app.guided_questions[self.current_section]['questions'].append(dialog.result)
             self.populate_questions()
-            self.save_questions()
-            add_question_window.destroy()
-        
-        ttk.Button(add_question_window, text="Save", command=save_question).pack(pady=10)
+            self.app.save_questions()
 
     def edit_question(self):
-        selected_section_index = self.section_listbox.curselection()
-        selected_question_index = self.question_listbox.curselection()
-
-        if not selected_section_index or not selected_question_index:
-            messagebox.showwarning("Warning", "Please select a section and a question to edit.")
+        if not self.current_section:
+            messagebox.showwarning("Warning", "Please select a section first.")
             return
 
-        # Get selected section and question
-        section = self.section_listbox.get(selected_section_index[0])
+        selected_question_index = self.question_listbox.curselection()
+        if not selected_question_index:
+            messagebox.showwarning("Warning", "Please select a question to edit.")
+            return
+
         question_index = selected_question_index[0]
-        question_data = self.app.guided_questions[section]['questions'][question_index]
+        question_data = self.app.guided_questions[self.current_section]['questions'][question_index]
 
-        # Create a window to edit the question
-        edit_question_window = tk.Toplevel(self)
-        edit_question_window.title("Edit Question")
-        edit_question_window.geometry("300x200")
-
-        tk.Label(edit_question_window, text="Edit Question:").pack(pady=5)
-        question_entry = ttk.Entry(edit_question_window)
-        question_entry.insert(0, question_data['question'])
-        question_entry.pack(pady=5)
-
-        def save_edited_question():
-            edited_question_text = question_entry.get().strip()
-            if not edited_question_text:
-                messagebox.showwarning("Warning", "Question text cannot be empty.")
-                return
-
-            question_data['question'] = edited_question_text
-
-            # Handle options for 'checkbox' and 'multiple' question types
-            if question_data['type'] in ['checkbox', 'multiple']:
-                options = question_data.get('options', [])
-                for i, option in enumerate(options):
-                    new_option = simpledialog.askstring("Edit Option", f"Option {i + 1}:", initialvalue=option)
-                    if new_option:
-                        options[i] = new_option
-                question_data['options'] = options
-
+        dialog = QuestionDialog(self, "Edit Question", question_data)
+        self.wait_window(dialog)
+        
+        if dialog.result:
+            self.app.guided_questions[self.current_section]['questions'][question_index] = dialog.result
             self.populate_questions()
-            self.save_questions()
-            edit_question_window.destroy()
-
-        ttk.Button(edit_question_window, text="Save", command=save_edited_question).pack(pady=10)
+            self.app.save_questions()
 
     def remove_question(self):
-        selected_section_index = self.section_listbox.curselection()
-        selected_question_index = self.question_listbox.curselection()
-
-        if not selected_section_index or not selected_question_index:
-            messagebox.showwarning("Warning", "Please select a section and a question to remove.")
+        if not self.current_section:
+            messagebox.showwarning("Warning", "Please select a section first.")
             return
 
-        section = self.section_listbox.get(selected_section_index[0])
+        selected_question_index = self.question_listbox.curselection()
+        if not selected_question_index:
+            messagebox.showwarning("Warning", "Please select a question to remove.")
+            return
+
         question_index = selected_question_index[0]
 
         if messagebox.askyesno("Confirm", "Are you sure you want to remove this question?"):
-            del self.app.guided_questions[section]['questions'][question_index]
+            del self.app.guided_questions[self.current_section]['questions'][question_index]
             self.populate_questions()
-            self.save_questions()
-
-
+            self.app.save_questions()
+            
+    def save_questions(self):
+        self.app.save_questions()
         
 class AdminSection:
     def __init__(self, master, app):
@@ -412,6 +432,10 @@ class LLMPlayground:
         self.admin_password_hash = None
         self.load_password()
         
+    def save_questions(self):
+        with open('guided_questions.json', 'w') as f:
+            json.dump(self.guided_questions, f)
+
     def save_password(self, password):
         salt = bcrypt.gensalt()
         hashed = bcrypt.hashpw(password.encode('utf-8'), salt)
@@ -606,9 +630,14 @@ class LLMPlayground:
             ("CSV files", "*.csv")
         ])
         if file_path:
-            self.attached_file_content = self.read_file_content(file_path)
-            file_name = os.path.basename(file_path)
-            self.user_input.insert(tk.END, f" [Attached: {file_name}]")
+            try:
+                self.attached_file_content = self.read_file_content(file_path)
+                file_name = os.path.basename(file_path)
+                self.user_input.insert(tk.END, f" [Attached: {file_name}]")
+            except Exception as e:
+                error_message = f"Error attaching file: {str(e)}"
+                print(error_message)
+                messagebox.showerror("File Attachment Error", error_message)
 
     def read_file_content(self, file_path):
         _, file_extension = os.path.splitext(file_path)
@@ -621,9 +650,16 @@ class LLMPlayground:
             print(f"Docx content length: {len(content)}")
             return content
         elif file_extension == '.pdf':
-            with open(file_path, 'rb') as file:
-                pdf_reader = PyPDF2.PdfReader(file)
-                return ' '.join(page.extract_text() for page in pdf_reader.pages)
+            try:
+                with open(file_path, 'rb') as file:
+                    pdf_reader = PyPDF2.PdfReader(file)
+                    content = []
+                    for page in pdf_reader.pages:
+                        content.append(page.extract_text())
+                    return ' '.join(content)
+            except Exception as e:
+                print(f"Error reading PDF: {str(e)}")
+                return f"Error reading PDF: {str(e)}"
         elif file_extension == '.csv':
             with open(file_path, 'r', encoding='utf-8') as file:
                 csv_reader = csv.reader(file)
