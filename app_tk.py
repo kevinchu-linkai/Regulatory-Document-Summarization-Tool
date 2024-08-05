@@ -2,7 +2,6 @@ import tkinter as tk
 from tkinter import ttk, scrolledtext, filedialog, messagebox, simpledialog
 import requests
 import json
-import threading
 import bcrypt
 import os
 import pickle
@@ -18,7 +17,22 @@ import io
 import tiktoken
 import re
 import concurrent.futures
-# from summarizer import Summarizer
+from openai import OpenAI
+import httpx
+import threading
+from dotenv import load_dotenv
+
+load_dotenv('.env', override=True)
+
+http_client=httpx.Client(verify=False)
+client = OpenAI(
+    base_url='https://opensource-challenger-api.prdlvgpu1.aiaccel.dell.com/v1',
+    http_client=http_client,
+    api_key=os.environ["CHALLENGER_GENAI_API_KEY"]
+)
+
+streaming = True
+max_output_tokens = 8000
 
 class QuestionDialog(tk.Toplevel):
     def __init__(self, parent, title, question_data=None):
@@ -434,11 +448,18 @@ class LLMPlayground:
         self.attached_file_content = None
         self.is_generating = False
         self.current_attachment = None
+        self.load_api_key()
         self.tokenizer = tiktoken.get_encoding("cl100k_base")
         self.create_widgets()
         self.apply_style()
         self.admin_password_hash = None
         self.load_password()
+        
+    def load_api_key(self):
+        load_dotenv('.env', override=True)
+        self.api_key = os.environ.get("CHALLENGER_GENAI_API_KEY")
+        if not self.api_key:
+            raise ValueError("API key not found. Please set CHALLENGER_GENAI_API_KEY in your .env file.")
         
     def save_questions(self):
         with open('guided_questions.json', 'w') as f:
@@ -506,8 +527,8 @@ class LLMPlayground:
         self.conversation_listbox.pack(pady=5, padx=5, fill='x')
         self.conversation_listbox.bind('<<ListboxSelect>>', self.on_conversation_select)
 
-        ttk.Label(sidebar, text="Select Ollama Model").pack(pady=5)
-        self.model_combobox = ttk.Combobox(sidebar, values=self.get_ollama_models(), width=30)
+        ttk.Label(sidebar, text="Select Model").pack(pady=5)
+        self.model_combobox = ttk.Combobox(sidebar, values=self.get_challenger_models(), width=30)
         self.model_combobox.pack(pady=5, padx=5, fill='x')
         if "llama3" in self.model_combobox['values']:
             self.model_combobox.set("llama3")
@@ -743,17 +764,34 @@ class LLMPlayground:
         self.attached_file_content = None  # Reset after sending
 
     def fuzzy_match_keywords(self, suggested_prompt):
-        # Extract answers from the suggested prompt
-        answers = [line.split(': ', 1)[1] for line in suggested_prompt.split('\n') if ': ' in line]
-        
-        # Combine all answers into a single string
-        combined_answers = ' '.join(answers)
-        
+        # Extract answers from the suggested prompt, focusing on Fields and Impacts
+        fields_answers = []
+        impacts_answers = []
+        current_section = None
+
+        for line in suggested_prompt.split('\n'):
+            if 'Fields:' in line:
+                current_section = 'Fields'
+            elif 'Impacts:' in line:
+                current_section = 'Impacts'
+            elif ': ' in line and current_section:
+                answer = line.split(': ', 1)[1]
+                if current_section == 'Fields':
+                    fields_answers.append(answer)
+                elif current_section == 'Impacts':
+                    impacts_answers.append(answer)
+
+        # Combine Fields and Impacts answers
+        combined_answers = ' '.join(fields_answers + impacts_answers)
+
+        # Filter the keywords_df to only include rows where 'Checked' is not empty
+        checked_keywords = self.keywords_df[self.keywords_df['Checked'].notna()]
+
         # Perform fuzzy matching
-        best_match = process.extractOne(combined_answers, self.keywords_df['Checked'])
-        
+        best_match = process.extractOne(combined_answers, checked_keywords['Checked'])
+
         if best_match and best_match[1] > 60:  # You can adjust the threshold
-            matched_row = self.keywords_df[self.keywords_df['Checked'] == best_match[0]].iloc[0]
+            matched_row = checked_keywords[checked_keywords['Checked'] == best_match[0]].iloc[0]
             return matched_row['Keywords']
         else:
             return ""
@@ -780,13 +818,8 @@ class LLMPlayground:
                 # ... add other default questions here ...
             }
 
-    def get_ollama_models(self):
-        try:
-            response = requests.get("http://localhost:11434/api/tags")
-            models = response.json().get("models", [])
-            return [model["name"] for model in models]  # Return the full model name
-        except requests.exceptions.RequestException:
-            return []
+    def get_challenger_models(self):
+        return ["mixtral-8x7b-instruct-v01", "llamaguard-7b", "gemma-7b-it", "mistral-7b-instruct-v02", "phi-2", "llama-2-70b-chat", "phi-3-mini-128k-instruct", "llama-3-8b-instruct"]
 
     def new_chat(self):
         chat_name = f"Chat {len(self.conversations) + 1}"
@@ -825,40 +858,39 @@ class LLMPlayground:
 
         try:
             context = self.get_relevant_context(prompt)
-            full_prompt = f"Context: {context}\n\nUser: {prompt}"
+            full_prompt = f"Context: {context}\n\n{prompt}"
             
-            # Summarize if the prompt is very long
-            #if len(self.tokenizer.encode(full_prompt)) > 12000:
-                #full_prompt = self.summarizer(full_prompt, ratio=0.8)  # Adjust ratio as needed
+            chunks = self.smart_chunk_prompt(full_prompt, max_tokens=4000)
             
-            chunks = self.smart_chunk_prompt(full_prompt)
-            
+            final_response = ""
             if len(chunks) > 1:
-                responses = self.process_chunks_parallel(model, chunks)
-                final_response = self.summarize_responses(model, "\n\n".join(responses), prompt)
+                responses = self.process_chunks_parallel(model, chunks, full_prompt)
+                final_response = self.summarize_responses(model, "\n\n".join(responses), full_prompt)
             else:
-                final_response = self.process_chunk(model, chunks[0], 1, 1)
+                final_response = self.process_chunk(model, chunks[0], 1, 1, full_prompt)
 
             self.conversations[self.current_conversation].append({"role": "assistant", "content": final_response})
-            self.master.after(0, self.update_chat_display)
+            self.master.after(0, self.update_final_response, final_response)
         except requests.exceptions.RequestException as e:
             self.master.after(0, self.show_error_popup, str(e))
         finally:
             self.is_generating = False
             self.user_input.config(state='normal')
 
-    def process_chunks_parallel(self, model, chunks):
+    def process_chunks_parallel(self, model, chunks, original_prompt):
         with concurrent.futures.ThreadPoolExecutor() as executor:
-            futures = [executor.submit(self.process_chunk, model, chunk, i+1, len(chunks)) 
-                       for i, chunk in enumerate(chunks)]
+            futures = [executor.submit(self.process_chunk, model, chunk, i+1, len(chunks), original_prompt) 
+                    for i, chunk in enumerate(chunks)]
             responses = []
             for future in concurrent.futures.as_completed(futures):
                 response = future.result()
                 responses.append(response)
-                self.master.after(0, self.update_response, "\n\n".join(responses))
         return responses
     
-    def smart_chunk_prompt(self, prompt, max_tokens=6000):
+    def count_tokens(self, text):
+        return len(self.tokenizer.encode(text))
+    
+    def smart_chunk_prompt(self, prompt, max_tokens=4000):  # Reduced from 6000
         tokens = self.tokenizer.encode(prompt)
         chunks = []
         current_chunk = []
@@ -886,47 +918,135 @@ class LLMPlayground:
             chunk = self.tokenizer.decode(tokens[i:i+max_tokens])
             chunks.append(chunk)
         return chunks
-
+    
     def add_instructions_to_chunk(self, chunk, original_prompt):
-        # Extract the instruction part from the original prompt
-        instruction_match = re.search(r"Please provide .+?:\n", original_prompt, re.DOTALL)
-        if instruction_match:
-            instructions = instruction_match.group(0)
-            sections = re.findall(r"\d+\).+?(?=\n\d+\)|\Z)", instructions, re.DOTALL)
-            
-            # Add instructions to the chunk
-            chunk_with_instructions = f"{instructions}\n\nNote: This is a part of a larger document. For any sections where information is not available in this chunk, please write 'Information not available in this chunk.'\n\nChunk content:\n{chunk}"
-            
-            return chunk_with_instructions
+        # Split the original prompt into guided prompt and user input/file content
+        parts = original_prompt.split("User Input:", 1)
+        
+        if len(parts) > 1:
+            guided_prompt = parts[0].strip()
+            user_input_and_file = parts[1].strip()
         else:
-            return chunk
+            # If there's no "User Input:" separator, treat the whole thing as guided prompt
+            guided_prompt = original_prompt
+            user_input_and_file = ""
 
-    def process_chunk(self, model, chunk, chunk_num, total_chunks):
-        url = "http://localhost:11434/api/generate"
+        # Remove "Attached File Content:" and everything after it from the guided prompt
+        guided_prompt = guided_prompt.split("Attached File Content:", 1)[0].strip()
+
+        # Construct the instructions
+        instructions = f"""
+        Instructions based on the guided prompt:
+        {guided_prompt}
+
+        Note: This is a part of a larger document. For any sections where information is not available in this chunk, please write 'Information not available in this chunk.'
+
+        User Input and/or File Content:
+        {user_input_and_file}
+
+        Chunk content:
+        {chunk}
+        """
+
+        return instructions.strip()
+
+    def process_chunk(self, model, chunk, chunk_num, total_chunks, original_prompt):
+        url = "https://opensource-challenger-api.prdlvgpu1.aiaccel.dell.com/v1/chat/completions"
+        headers = {
+            'accept': 'application/json',
+            'api-key': self.api_key,
+            'Content-Type': 'application/json'
+        }
+        
+        system_message = "You are a helpful AI assistant. Respond directly to the user without mentioning yourself in the third person or commenting on the nature of the response."
+        
+        if chunk_num > 1:
+            chunk_with_instructions = self.add_instructions_to_chunk(chunk, original_prompt)
+        else:
+            chunk_with_instructions = chunk
+        
+        # Construct messages array with proper alternation
+        messages = [
+            {"role": "system", "content": system_message},
+        ]
+        
+        # Add previous messages from the conversation if available
+        if self.current_conversation and self.conversations[self.current_conversation]:
+            for message in self.conversations[self.current_conversation]:
+                messages.append({"role": message['role'], "content": message['content']})
+        
+        # Add the current chunk as a user message
+        messages.append({"role": "user", "content": chunk_with_instructions})
+        
+        # Count tokens in the input
+        input_tokens = sum(self.count_tokens(message['content']) for message in messages)
+        
+        # Calculate available tokens for the response
+        max_context_length = 8192
+        available_tokens = max_context_length - input_tokens - 100  # Leave some buffer
+        
+        # If available tokens is negative, we need to truncate the input
+        if available_tokens <= 0:
+            # Truncate the chunk_with_instructions
+            max_chunk_tokens = max_context_length - self.count_tokens(system_message) - 100
+            chunk_tokens = self.tokenizer.encode(chunk_with_instructions)[:max_chunk_tokens]
+            chunk_with_instructions = self.tokenizer.decode(chunk_tokens)
+            messages = [
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": chunk_with_instructions}
+            ]
+            available_tokens = max_context_length - self.count_tokens(system_message) - self.count_tokens(chunk_with_instructions) - 100
+
+        # Ensure max_tokens is within the available range
+        max_tokens = min(int(self.max_tokens_entry.get()), available_tokens)
+        max_tokens = max(max_tokens, 1)  # Ensure it's at least 1
+        
         data = {
             "model": model,
-            "prompt": chunk,
+            "messages": messages,
             "temperature": self.temperature_scale.get(),
-            "options": {
-                "num_ctx": 8192
-            },
-            "max_tokens": int(self.max_tokens_entry.get())
+            "top_p": 0.95,
+            "max_tokens": max_tokens,
+            "stream": True
         }
-        print(f"Processing chunk {chunk_num}/{total_chunks}")
         
-        response = requests.post(url, json=data, stream=True)
+        response = requests.post(url, headers=headers, json=data, stream=True, verify=False)
         chunk_response = ""
-        
         for line in response.iter_lines():
             if line:
-                json_response = json.loads(line)
-                if 'response' in json_response:
-                    chunk_response += json_response['response']
-                    self.master.after(0, self.update_response, f"Processing chunk {chunk_num}/{total_chunks}...\n\n{chunk_response}")
+                decoded_line = line.decode('utf-8')
+                if decoded_line.startswith("data: "):
+                    if decoded_line.strip() == "data: [DONE]":
+                        break
+                    try:
+                        json_response = json.loads(decoded_line[6:])
+                        if 'choices' in json_response and len(json_response['choices']) > 0:
+                            delta = json_response['choices'][0].get('delta', {})
+                            if 'content' in delta:
+                                chunk_response += delta['content']
+                    except json.JSONDecodeError as e:
+                        print(f"JSON Decode Error: {e}")
+                        print(f"Problematic line: {decoded_line}")
+                        continue
+                else:
+                    print(f"Unexpected line format: {decoded_line}")
         
         return chunk_response
 
+    def update_processing_info(self, info):
+        self.chat_display.config(state='normal')
+        self.chat_display.insert("end", f"{info}\n")
+        self.chat_display.config(state='disabled')
+        self.chat_display.see("end")
+
     def summarize_responses(self, model, combined_response, original_prompt):
+        url = "https://opensource-challenger-api.prdlvgpu1.aiaccel.dell.com/v1/chat/completions"
+        headers = {
+            'accept': 'application/json',
+            'api-key': self.api_key,
+            'Content-Type': 'application/json'
+        }
+        
         instruction_match = re.search(r"Please provide .+?:\n", original_prompt, re.DOTALL)
         if instruction_match:
             instructions = instruction_match.group(0)
@@ -934,42 +1054,88 @@ class LLMPlayground:
         else:
             summary_prompt = f"Please summarize and consolidate the following responses into a single coherent response:\n\n{combined_response}"
 
-        url = "http://localhost:11434/api/generate"
+        system_message = "You are a helpful AI assistant. Summarize the given information concisely."
+        
+        # Construct messages array
+        messages = [
+            {"role": "system", "content": system_message},
+            {"role": "user", "content": summary_prompt}
+        ]
+        
+        # Count tokens in the input
+        input_tokens = sum(self.count_tokens(message['content']) for message in messages)
+        
+        # Calculate available tokens for the response
+        max_context_length = 8192
+        available_tokens = max_context_length - input_tokens - 100  # Leave some buffer
+        
+        # If available tokens is negative, we need to truncate the input
+        if available_tokens <= 0:
+            # Truncate the summary_prompt
+            max_prompt_tokens = max_context_length - self.count_tokens(system_message) - 100
+            prompt_tokens = self.tokenizer.encode(summary_prompt)[:max_prompt_tokens]
+            summary_prompt = self.tokenizer.decode(prompt_tokens)
+            messages = [
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": summary_prompt}
+            ]
+            available_tokens = max_context_length - self.count_tokens(system_message) - self.count_tokens(summary_prompt) - 100
+
+        # Ensure max_tokens is within the available range
+        max_tokens = min(int(self.max_tokens_entry.get()), available_tokens)
+        max_tokens = max(max_tokens, 1)  # Ensure it's at least 1
+
         data = {
             "model": model,
-            "prompt": summary_prompt,
+            "messages": messages,
             "temperature": 0.7,
-            "options": {
-                "num_ctx": 8192
-            },
-            "max_tokens": int(self.max_tokens_entry.get())
+            "top_p": 0.95,
+            "max_tokens": max_tokens,
+            "stream": True
         }
         
-        response = requests.post(url, json=data, stream=True)
+        response = requests.post(url, headers=headers, json=data, stream=True, verify=False)
         summary_response = ""
-        
         for line in response.iter_lines():
             if line:
-                json_response = json.loads(line)
-                if 'response' in json_response:
-                    summary_response += json_response['response']
-                    self.master.after(0, self.update_response, f"Summarizing final response...\n\n{summary_response}")
-        
+                decoded_line = line.decode('utf-8')
+                if decoded_line.startswith("data: "):
+                    if decoded_line.strip() == "data: [DONE]":
+                        break
+                    try:
+                        json_response = json.loads(decoded_line[6:])
+                        if 'choices' in json_response and len(json_response['choices']) > 0:
+                            delta = json_response['choices'][0].get('delta', {})
+                            if 'content' in delta:
+                                summary_response += delta['content']
+                    except json.JSONDecodeError as e:
+                        print(f"JSON Decode Error: {e}")
+                        print(f"Problematic line: {decoded_line}")
+                        continue
+                else:
+                    print(f"Unexpected line format: {decoded_line}")
+                        
         return summary_response
-
-    def update_response(self, response_so_far):
+    
+    def update_response(self, response):
         self.chat_display.config(state='normal')
-        self.chat_display.delete('1.0', tk.END)
-        for message in self.conversations[self.current_conversation]:
-            if message['role'] == 'user':
-                self.chat_display.insert(tk.END, f"User: ", 'user')
-                self.chat_display.insert(tk.END, f"{message['content']}\n\n", 'user_message')
-            else:
-                self.chat_display.insert(tk.END, f"Assistant: ", 'assistant')
-                self.chat_display.insert(tk.END, f"{message['content']}\n\n", 'assistant_message')
-        self.chat_display.insert(tk.END, f"Assistant: {response_so_far}", 'assistant_message')
+        last_assistant_index = self.chat_display.search("Assistant:", "end", backwards=True, stopindex="1.0")
+        if last_assistant_index:
+            self.chat_display.delete(last_assistant_index, "end-1c")
+            self.chat_display.insert(last_assistant_index, f"Assistant: {response}\n\n")
+        else:
+            self.chat_display.insert("end", f"Assistant: {response}\n\n")
         self.chat_display.config(state='disabled')
-        self.chat_display.see(tk.END)
+        self.chat_display.see("end")
+
+    def update_final_response(self, response):
+        self.chat_display.config(state='normal')
+        last_assistant_index = self.chat_display.search("Assistant:", "end", backwards=True, stopindex="1.0")
+        if last_assistant_index:
+            self.chat_display.delete(last_assistant_index, "end-1c")
+        self.chat_display.insert("end", f"Assistant: {response}\n\n")
+        self.chat_display.config(state='disabled')
+        self.chat_display.see("end")
 
     def show_error_popup(self, error_message):
         messagebox.showerror("Error", error_message)
