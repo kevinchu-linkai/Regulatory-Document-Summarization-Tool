@@ -6,6 +6,8 @@ import threading
 import bcrypt
 import os
 import pickle
+import pandas as pd
+from fuzzywuzzy import process
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
@@ -13,6 +15,10 @@ import docx2txt
 import PyPDF2
 import csv
 import io
+import tiktoken
+import re
+import concurrent.futures
+# from summarizer import Summarizer
 
 class QuestionDialog(tk.Toplevel):
     def __init__(self, parent, title, question_data=None):
@@ -415,8 +421,10 @@ class LLMPlayground:
         self.master = master
         master.title("LLM Playground")
         master.geometry("1200x800")
-        
+        self.max_file_size = 5 * 1024 * 1024  # 50 MB limit, adjust as needed
+        self.keywords_df = pd.read_csv('keyword_extraction.csv')
         self.guided_questions = {}
+        # self.summarizer = Summarizer()
         self.load_questions()
         self.conversations = {}
         self.current_conversation = None
@@ -426,7 +434,7 @@ class LLMPlayground:
         self.attached_file_content = None
         self.is_generating = False
         self.current_attachment = None
-
+        self.tokenizer = tiktoken.get_encoding("cl100k_base")
         self.create_widgets()
         self.apply_style()
         self.admin_password_hash = None
@@ -604,7 +612,20 @@ class LLMPlayground:
                 suggested_prompt += f"{section}: {answer}\n"
 
         suggested_prompt += "\nPlease provide a comprehensive summary for a bulletin based on these factors. Pretend that you are a regulatory engineer whose job is to interpret this document into an internal regulatory bulletin for engineers to follow some important compliance guidance. Do not focus on punishments or penalties. Please provide the summary with all the following sections, and all of them should be filled in with corresponding information:\n"
-        suggested_prompt += "1) Program Requirements Summary\n2) Regulation Publication Date\n3) Enforcement Date\n4) Enforcement based on\n5) Compliance Checkpoint\n6) Regulation Status\n7) Current process\n8) Changes from current process\n9) Key Details – Legislation Requirement\n10) Requirement\n11) Dependency\n12) Details of Requirement\n13) Wireless Technology Scope\n14) Detail Requirements\n"
+        suggested_prompt += "1) Program Requirements Summary: a 2-3 sentence, brief summary of the regulation.\n" + \
+                            "2) Regulation Publication Date: the date the regulation was published. If regulation has not been published, leave this blank.\n" + \
+                            "3) Enforcement Date: This is the effective date of the regulation.\n" + \
+                            "4) Enforcement based on: Type of enforcement\n" + \
+                            "5) Compliance Checkpoint: How is regulation enforced upon entry?\n" + \
+                            "6) Regulation Status: Type of Regulation Status\n" + \
+                            "7) What is current process: If a regulation revision, this will be a 2-3 sentence summary of the current process, if it is a new regulation, note that it is new\n" + \
+                            "8) What has changed from current process:  2-3 sentence summary of what is changing from existing regulation process.  This section is what is used for Bulletin email summaries. Character limit has been increased to 1000. Must ensure Summary in properties reflects same as Bulletin\n" + \
+                            "9) Key Details – Legislation Requirement: This section is the regulation requirements. What is needed to reach compliance.\n" + \
+                            "10) Requirement: Frequently used Requirements are listed in the table template, add additional requirements as required, and delete those not relevant.\n" + \
+                            "11) Dependency: Is the requirement dependent on another requirement in the table? If so, list the requirement that must be completed to meet the requirement.\n" + \
+                            "12) Details of Requirement: High level explanation of the regulatory requirement\n" + \
+                            "13) Wireless Technology Scope: For Wireless Programs only, leave blank if not related\n" + \
+                            "14) Detail Requirements: This is details of Regulation.  May include some tables and technical detail copied from regulation.  Should not, however be a straight copy/paste.\n" 
 
         print(f"Suggested prompt: {suggested_prompt}")
         return suggested_prompt
@@ -631,9 +652,18 @@ class LLMPlayground:
         ])
         if file_path:
             try:
+                # Check file size
+                file_size = os.path.getsize(file_path)
+                if file_size > self.max_file_size:
+                    raise ValueError(f"File size ({file_size / (1024 * 1024):.2f} MB) exceeds the maximum allowed size ({self.max_file_size / (1024 * 1024)} MB)")
+
                 self.attached_file_content = self.read_file_content(file_path)
                 file_name = os.path.basename(file_path)
                 self.user_input.insert(tk.END, f" [Attached: {file_name}]")
+            except ValueError as e:
+                error_message = str(e)
+                print(error_message)
+                messagebox.showerror("File Attachment Error", error_message)
             except Exception as e:
                 error_message = f"Error attaching file: {str(e)}"
                 print(error_message)
@@ -642,6 +672,11 @@ class LLMPlayground:
     def read_file_content(self, file_path):
         _, file_extension = os.path.splitext(file_path)
         
+        # Check file size again before reading
+        file_size = os.path.getsize(file_path)
+        if file_size > self.max_file_size:
+            raise ValueError(f"File size ({file_size / (1024 * 1024):.2f} MB) exceeds the maximum allowed size ({self.max_file_size / (1024 * 1024)} MB)")
+
         if file_extension == '.txt':
             with open(file_path, 'r', encoding='utf-8') as file:
                 return file.read()
@@ -659,16 +694,16 @@ class LLMPlayground:
                     return ' '.join(content)
             except Exception as e:
                 print(f"Error reading PDF: {str(e)}")
-                return f"Error reading PDF: {str(e)}"
+                raise ValueError(f"Error reading PDF: {str(e)}")
         elif file_extension == '.csv':
             with open(file_path, 'r', encoding='utf-8') as file:
                 csv_reader = csv.reader(file)
                 return '\n'.join(','.join(row) for row in csv_reader)
         else:
-            return "Unsupported file format"
+            raise ValueError("Unsupported file format")
 
-    def display_file_briefing(self, file_content, guided_prompt):
-        briefing = f"File Content Preview:\n{file_content[:500]}...\n\nGuided Prompt:\n{guided_prompt}"
+    def display_file_briefing(self, guided_prompt, keywords):
+        briefing = f"Guided Prompt:\n{guided_prompt}\n\nRelevant Keywords: {keywords}"
         self.conversations[self.current_conversation].append({"role": "system", "content": briefing})
         self.update_chat_display()
 
@@ -689,11 +724,15 @@ class LLMPlayground:
             if suggested_prompt:
                 user_input += suggested_prompt
                 
-            # Ask if the user wants an AI-generated summary
+            # Perform fuzzy matching and get keywords
+            keywords = self.fuzzy_match_keywords(suggested_prompt)
+            
             if messagebox.askyesno("AI Summary", "Do you want an AI-generated summary of the attached file?"):
-                threading.Thread(target=self.get_model_response, args=(self.model_combobox.get(), user_input)).start()
+                full_prompt = f"{user_input}\n\nAttached File Content:\n{self.attached_file_content}\n\nPossible Keywords: {keywords}"
+                self.display_file_briefing(user_input, keywords)
+                threading.Thread(target=self.get_model_response, args=(self.model_combobox.get(), full_prompt)).start()
             else:
-                self.display_file_briefing(self.attached_file_content, user_input)
+                self.display_file_briefing(user_input, keywords)
         else:
             # Normal message without attachment
             self.conversations[self.current_conversation].append({"role": "user", "content": user_input})
@@ -703,6 +742,21 @@ class LLMPlayground:
         self.user_input.delete(0, tk.END)
         self.attached_file_content = None  # Reset after sending
 
+    def fuzzy_match_keywords(self, suggested_prompt):
+        # Extract answers from the suggested prompt
+        answers = [line.split(': ', 1)[1] for line in suggested_prompt.split('\n') if ': ' in line]
+        
+        # Combine all answers into a single string
+        combined_answers = ' '.join(answers)
+        
+        # Perform fuzzy matching
+        best_match = process.extractOne(combined_answers, self.keywords_df['Checked'])
+        
+        if best_match and best_match[1] > 60:  # You can adjust the threshold
+            matched_row = self.keywords_df[self.keywords_df['Checked'] == best_match[0]].iloc[0]
+            return matched_row['Keywords']
+        else:
+            return ""
 
     def save_questions(self):
         with open('guided_questions.json', 'w') as f:
@@ -771,31 +825,21 @@ class LLMPlayground:
 
         try:
             context = self.get_relevant_context(prompt)
+            full_prompt = f"Context: {context}\n\nUser: {prompt}"
             
-            url = "http://localhost:11434/api/generate"
-            data = {
-                "model": model,
-                "prompt": f"Context: {context}\n\nUser: {prompt}",
-                "temperature": self.temperature_scale.get(),
-                "options": {
-                    "num_ctx": 8192
-                },
-                "max_tokens": int(self.max_tokens_entry.get())
-            }
-            print(f"Prompt length: {len(data['prompt'])}")
+            # Summarize if the prompt is very long
+            #if len(self.tokenizer.encode(full_prompt)) > 12000:
+                #full_prompt = self.summarizer(full_prompt, ratio=0.8)  # Adjust ratio as needed
             
-            response = requests.post(url, json=data, stream=True)
-            full_response = ""
+            chunks = self.smart_chunk_prompt(full_prompt)
             
-            for line in response.iter_lines():
-                if line:
-                    json_response = json.loads(line)
-                    if 'response' in json_response:
-                        chunk = json_response['response']
-                        full_response += chunk
-                        self.master.after(0, self.update_response, full_response)
+            if len(chunks) > 1:
+                responses = self.process_chunks_parallel(model, chunks)
+                final_response = self.summarize_responses(model, "\n\n".join(responses), prompt)
+            else:
+                final_response = self.process_chunk(model, chunks[0], 1, 1)
 
-            self.conversations[self.current_conversation].append({"role": "assistant", "content": full_response})
+            self.conversations[self.current_conversation].append({"role": "assistant", "content": final_response})
             self.master.after(0, self.update_chat_display)
         except requests.exceptions.RequestException as e:
             self.master.after(0, self.show_error_popup, str(e))
@@ -803,6 +847,115 @@ class LLMPlayground:
             self.is_generating = False
             self.user_input.config(state='normal')
 
+    def process_chunks_parallel(self, model, chunks):
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            futures = [executor.submit(self.process_chunk, model, chunk, i+1, len(chunks)) 
+                       for i, chunk in enumerate(chunks)]
+            responses = []
+            for future in concurrent.futures.as_completed(futures):
+                response = future.result()
+                responses.append(response)
+                self.master.after(0, self.update_response, "\n\n".join(responses))
+        return responses
+    
+    def smart_chunk_prompt(self, prompt, max_tokens=6000):
+        tokens = self.tokenizer.encode(prompt)
+        chunks = []
+        current_chunk = []
+        current_length = 0
+        
+        sentences = re.split('(?<=[.!?]) +', prompt)
+        for sentence in sentences:
+            sentence_tokens = self.tokenizer.encode(sentence)
+            if current_length + len(sentence_tokens) > max_tokens and current_chunk:
+                chunks.append(self.tokenizer.decode(current_chunk))
+                current_chunk = []
+                current_length = 0
+            current_chunk.extend(sentence_tokens)
+            current_length += len(sentence_tokens)
+        
+        if current_chunk:
+            chunks.append(self.tokenizer.decode(current_chunk))
+        
+        return chunks
+
+    def chunk_prompt(self, prompt, max_tokens=7500):  # Reduced to leave more room for instructions
+        tokens = self.tokenizer.encode(prompt)
+        chunks = []
+        for i in range(0, len(tokens), max_tokens):
+            chunk = self.tokenizer.decode(tokens[i:i+max_tokens])
+            chunks.append(chunk)
+        return chunks
+
+    def add_instructions_to_chunk(self, chunk, original_prompt):
+        # Extract the instruction part from the original prompt
+        instruction_match = re.search(r"Please provide .+?:\n", original_prompt, re.DOTALL)
+        if instruction_match:
+            instructions = instruction_match.group(0)
+            sections = re.findall(r"\d+\).+?(?=\n\d+\)|\Z)", instructions, re.DOTALL)
+            
+            # Add instructions to the chunk
+            chunk_with_instructions = f"{instructions}\n\nNote: This is a part of a larger document. For any sections where information is not available in this chunk, please write 'Information not available in this chunk.'\n\nChunk content:\n{chunk}"
+            
+            return chunk_with_instructions
+        else:
+            return chunk
+
+    def process_chunk(self, model, chunk, chunk_num, total_chunks):
+        url = "http://localhost:11434/api/generate"
+        data = {
+            "model": model,
+            "prompt": chunk,
+            "temperature": self.temperature_scale.get(),
+            "options": {
+                "num_ctx": 8192
+            },
+            "max_tokens": int(self.max_tokens_entry.get())
+        }
+        print(f"Processing chunk {chunk_num}/{total_chunks}")
+        
+        response = requests.post(url, json=data, stream=True)
+        chunk_response = ""
+        
+        for line in response.iter_lines():
+            if line:
+                json_response = json.loads(line)
+                if 'response' in json_response:
+                    chunk_response += json_response['response']
+                    self.master.after(0, self.update_response, f"Processing chunk {chunk_num}/{total_chunks}...\n\n{chunk_response}")
+        
+        return chunk_response
+
+    def summarize_responses(self, model, combined_response, original_prompt):
+        instruction_match = re.search(r"Please provide .+?:\n", original_prompt, re.DOTALL)
+        if instruction_match:
+            instructions = instruction_match.group(0)
+            summary_prompt = f"{instructions}\n\nPlease summarize and consolidate the following responses into a single coherent response, following the format specified above:\n\n{combined_response}"
+        else:
+            summary_prompt = f"Please summarize and consolidate the following responses into a single coherent response:\n\n{combined_response}"
+
+        url = "http://localhost:11434/api/generate"
+        data = {
+            "model": model,
+            "prompt": summary_prompt,
+            "temperature": 0.7,
+            "options": {
+                "num_ctx": 8192
+            },
+            "max_tokens": int(self.max_tokens_entry.get())
+        }
+        
+        response = requests.post(url, json=data, stream=True)
+        summary_response = ""
+        
+        for line in response.iter_lines():
+            if line:
+                json_response = json.loads(line)
+                if 'response' in json_response:
+                    summary_response += json_response['response']
+                    self.master.after(0, self.update_response, f"Summarizing final response...\n\n{summary_response}")
+        
+        return summary_response
 
     def update_response(self, response_so_far):
         self.chat_display.config(state='normal')
