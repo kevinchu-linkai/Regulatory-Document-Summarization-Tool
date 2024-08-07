@@ -34,42 +34,72 @@ client = OpenAI(
 streaming = True
 max_output_tokens = 8000
 
+class ScrollableFrame(ttk.Frame):
+    def __init__(self, container, *args, **kwargs):
+        super().__init__(container, *args, **kwargs)
+        canvas = tk.Canvas(self)
+        scrollbar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
+        self.scrollable_frame = ttk.Frame(canvas)
+
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
 class QuestionDialog(tk.Toplevel):
     def __init__(self, parent, title, question_data=None):
         super().__init__(parent)
         self.title(title)
-        self.geometry("400x400")
-        self.resizable(False, False)
-        
+        self.geometry("800x600")
+        self.minsize(800, 600)
+        self.follow_up_questions = question_data.get('follow_up', []) if question_data else []
         self.question_data = question_data or {}
         self.result = None
+        self.parent = parent
+        self.scrollable_frame = ScrollableFrame(self)
+        self.scrollable_frame.pack(fill="both", expand=True)
         
         self.create_widgets()
+        self.update_follow_up_button()
         
     def create_widgets(self):
         # Question type
-        ttk.Label(self, text="Question Type:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        ttk.Label(self.scrollable_frame.scrollable_frame, text="Question Type:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
         self.type_var = tk.StringVar(value=self.question_data.get('type', 'checkbox'))
-        type_combo = ttk.Combobox(self, textvariable=self.type_var, values=['checkbox', 'yesno', 'multiple', 'open'])
+        type_combo = ttk.Combobox(self.scrollable_frame.scrollable_frame, textvariable=self.type_var, values=['checkbox', 'yesno', 'multiple', 'open'])
         type_combo.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
         type_combo.bind("<<ComboboxSelected>>", self.on_type_change)
         
         # Question text
-        ttk.Label(self, text="Question:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
-        self.question_entry = ttk.Entry(self, width=40)
+        ttk.Label(self.scrollable_frame.scrollable_frame, text="Question:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
+        self.question_entry = ttk.Entry(self.scrollable_frame.scrollable_frame, width=40)
         self.question_entry.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
         self.question_entry.insert(0, self.question_data.get('question', ''))
         
         # Options frame (for checkbox and multiple)
-        self.options_frame = ttk.LabelFrame(self, text="Options")
+        self.options_frame = ttk.LabelFrame(self.scrollable_frame.scrollable_frame, text="Options")
         self.options_frame.grid(row=2, column=0, columnspan=2, padx=5, pady=5, sticky="nsew")
         
         # Add option button
-        self.add_option_button = ttk.Button(self, text="Add Option", command=self.add_option)
+        self.add_option_button = ttk.Button(self.scrollable_frame.scrollable_frame, text="Add Option", command=self.add_option)
         self.add_option_button.grid(row=3, column=0, columnspan=2, padx=5, pady=5)
         
+        # Follow-up questions
+        self.follow_up_frame = ttk.LabelFrame(self.scrollable_frame.scrollable_frame, text="Follow-up Questions")
+        self.follow_up_frame.grid(row=5, column=0, columnspan=2, padx=5, pady=5, sticky="nsew")
+
+        self.follow_up_button = ttk.Button(self.scrollable_frame.scrollable_frame, text="Add Follow-up Question", command=self.add_follow_up_question)
+        self.follow_up_button.grid(row=6, column=0, columnspan=2, padx=5, pady=5)
+        
         # Save button
-        ttk.Button(self, text="Save", command=self.save).grid(row=4, column=0, columnspan=2, padx=5, pady=5)
+        self.save_button = ttk.Button(self.scrollable_frame.scrollable_frame, text="Save", command=self.save)
+        self.save_button.grid(row=7, column=0, columnspan=2, padx=5, pady=5)
         
         self.option_entries = []
         if 'options' in self.question_data:
@@ -77,6 +107,55 @@ class QuestionDialog(tk.Toplevel):
                 self.add_option(option)
         
         self.on_type_change()
+        self.update_follow_up_display()
+      
+    def add_follow_up_question(self):
+        follow_up_dialog = QuestionDialog(self, "Add Follow-up Question")
+        self.wait_window(follow_up_dialog)
+        if follow_up_dialog.result:
+            condition = simpledialog.askstring("Follow-up Condition", "Enter the condition for this follow-up question (yes/no):")
+            if condition in ['yes', 'no']:
+                follow_up_dialog.result['condition'] = condition
+                self.follow_up_questions.append(follow_up_dialog.result)
+                self.update_follow_up_display()
+                self.save_follow_up_questions()  # Save changes immediately
+            else:
+                messagebox.showerror("Invalid Condition", "Please enter either 'yes' or 'no' as the condition.")
+        self.update_geometry()
+
+    def save_follow_up_questions(self):
+        if isinstance(self.parent, QuestionManager):
+            self.parent.save_follow_up_questions(self.question_data, self.follow_up_questions)
+        else:
+            print("Warning: Unable to save follow-up questions. Parent is not QuestionManager.")
+
+    def update_follow_up_button(self):
+        if self.type_var.get() == 'yesno':
+            self.follow_up_button.grid()
+        else:
+            self.follow_up_button.grid_remove()
+
+    def update_follow_up_display(self):
+        for widget in self.follow_up_frame.winfo_children():
+            widget.destroy()
+        for i, question in enumerate(self.follow_up_questions):
+            ttk.Label(self.follow_up_frame, text=f"{i+1}. {question['question']}").grid(row=i, column=0, sticky="w")
+            ttk.Button(self.follow_up_frame, text="Edit", command=lambda q=question: self.edit_follow_up(q)).grid(row=i, column=1)
+            ttk.Button(self.follow_up_frame, text="Remove", command=lambda q=question: self.remove_follow_up(q)).grid(row=i, column=2)
+
+    def edit_follow_up(self, question):
+        index = self.follow_up_questions.index(question)
+        follow_up_dialog = QuestionDialog(self, "Edit Follow-up Question", question)
+        self.wait_window(follow_up_dialog)
+        if follow_up_dialog.result:
+            self.follow_up_questions[index] = follow_up_dialog.result
+            self.update_follow_up_display()
+        self.update_geometry()
+
+    def remove_follow_up(self, question):
+        self.follow_up_questions.remove(question)
+        self.update_follow_up_display()
+        self.update_geometry()
         
     def on_type_change(self, event=None):
         question_type = self.type_var.get()
@@ -86,6 +165,7 @@ class QuestionDialog(tk.Toplevel):
         else:
             self.options_frame.grid_remove()
             self.add_option_button.grid_remove()
+        self.update_follow_up_button()
         
     def add_option(self, option_text=''):
         row = len(self.option_entries)
@@ -98,12 +178,14 @@ class QuestionDialog(tk.Toplevel):
         remove_btn.grid(row=row, column=1, padx=2, pady=2)
         
         self.option_entries.append((entry, remove_btn))
+        self.update_geometry()
         
     def remove_option(self, entry, button):
         entry.destroy()
         button.destroy()
         self.option_entries.remove((entry, button))
         self.options_frame.grid_columnconfigure(0, weight=1)
+        self.update_geometry()
         
     def save(self):
         question_type = self.type_var.get()
@@ -125,89 +207,92 @@ class QuestionDialog(tk.Toplevel):
                 return
             self.result['options'] = options
         
+        if self.follow_up_questions:
+            self.result['follow_up'] = self.follow_up_questions
+        
         self.destroy()
+
+    def update_follow_up_button(self):
+        if self.type_var.get() == 'yesno':
+            self.follow_up_button.grid()
+        else:
+            self.follow_up_button.grid_remove()
+
+    def update_geometry(self):
+        self.scrollable_frame.scrollable_frame.update_idletasks()
+        self.geometry(f"800x{min(600, self.scrollable_frame.scrollable_frame.winfo_reqheight() + 50)}")
 
 class GuidedQuestionDialog(tk.Toplevel):
     def __init__(self, parent, title, question_data):
         super().__init__(parent)
         self.title(title)
-        self.result = None  # Initialize self.result to None by default
+        self.geometry("400x300")
+        self.minsize(400, 300)
+        self.result = None
         self.question_data = question_data
         
-        # Create the appropriate widget based on the question type
-        if question_data['type'] == 'checkbox':
-            self.create_checkbox_dialog(question_data['options'])
-        elif question_data['type'] == 'yesno':
-            self.create_yesno_dialog(question_data['question'])
-        elif question_data['type'] == 'multiple':
-            self.create_multiple_dialog(question_data['question'], question_data['options'])
-        elif question_data['type'] == 'open':
-            self.create_open_dialog(question_data['question'])
+        self.scrollable_frame = ScrollableFrame(self)
+        self.scrollable_frame.pack(fill="both", expand=True)
+        
+        self.create_dialog()
+
+    def create_dialog(self):
+        question_type = self.question_data['type']
+        question_text = self.question_data['question']
+        
+        label = tk.Label(self.scrollable_frame.scrollable_frame, text=question_text, wraplength=380, justify="left")
+        label.pack(anchor="w", padx=10, pady=5)
+        
+        if question_type == 'checkbox':
+            self.create_checkbox_dialog(self.question_data['options'])
+        elif question_type == 'yesno':
+            self.create_yesno_dialog()
+        elif question_type == 'multiple':
+            self.create_multiple_dialog(self.question_data['options'])
+        elif question_type == 'open':
+            self.create_open_dialog()
+
+        self.add_ok_button()
 
     def create_checkbox_dialog(self, options):
         self.result = []
         for option in options:
             var = tk.BooleanVar()
-            cb = ttk.Checkbutton(self, text=option, variable=var)
+            cb = ttk.Checkbutton(self.scrollable_frame.scrollable_frame, text=option, variable=var)
             cb.pack(anchor="w", padx=10, pady=5)
             self.result.append((option, var))
-        
-        self.add_ok_button()
-        self.adjust_window_size(len(options))
 
-    def create_yesno_dialog(self, question):
-        label = tk.Label(self, text=question)
-        label.pack(anchor="w", padx=10, pady=5)
-        
-        var = tk.StringVar(value="No")
-        ttk.Radiobutton(self, text="Yes", variable=var, value="Yes").pack(anchor="w", padx=10, pady=5)
-        ttk.Radiobutton(self, text="No", variable=var, value="No").pack(anchor="w", padx=10, pady=5)
-        
-        self.result = var
-        self.add_ok_button()
-        self.adjust_window_size(2)
+    def create_yesno_dialog(self):
+        self.result = tk.StringVar(value="No")
+        ttk.Radiobutton(self.scrollable_frame.scrollable_frame, text="Yes", variable=self.result, value="Yes").pack(anchor="w", padx=10, pady=5)
+        ttk.Radiobutton(self.scrollable_frame.scrollable_frame, text="No", variable=self.result, value="No").pack(anchor="w", padx=10, pady=5)
+        ttk.Radiobutton(self.scrollable_frame.scrollable_frame, text="TBD", variable=self.result, value="TBD").pack(anchor="w", padx=10, pady=5)
 
-    def create_multiple_dialog(self, question, options):
-        label = tk.Label(self, text=question)
-        label.pack(anchor="w", padx=10, pady=5)
-        
+    def create_multiple_dialog(self, options):
         self.result = []
         for option in options:
             var = tk.BooleanVar()
-            cb = ttk.Checkbutton(self, text=option, variable=var)
+            cb = ttk.Checkbutton(self.scrollable_frame.scrollable_frame, text=option, variable=var)
             cb.pack(anchor="w", padx=10, pady=5)
             self.result.append((option, var))
-        
-        self.add_ok_button()
-        self.adjust_window_size(len(options))
 
-    def create_open_dialog(self, question):
-        label = tk.Label(self, text=question)
-        label.pack(anchor="w", padx=10, pady=5)
-        
-        text_entry = tk.Text(self, height=4, width=40, wrap=tk.WORD)
-        text_entry.pack(padx=10, pady=5, fill=tk.BOTH, expand=True)
-        
-        self.result = text_entry
-        self.add_ok_button()
-        self.adjust_window_size(1)
+    def create_open_dialog(self):
+        self.result = tk.Text(self.scrollable_frame.scrollable_frame, height=4, width=40, wrap=tk.WORD)
+        self.result.pack(padx=10, pady=5, fill=tk.BOTH, expand=True)
 
     def add_ok_button(self):
-        ttk.Button(self, text="OK", command=self.on_ok).pack(pady=10)
+        ttk.Button(self.scrollable_frame.scrollable_frame, text="OK", command=self.on_ok).pack(pady=10)
 
     def on_ok(self):
         if isinstance(self.result, tk.Text):
             self.result = self.result.get("1.0", tk.END).strip()
         self.destroy()
 
-    def adjust_window_size(self, item_count):
-        # Adjust the size of the window based on the content
-        base_height = 100  # Base height for title and buttons
-        item_height = 30  # Height per item
-        width = 400  # Fixed width
-        height = base_height + item_height * item_count
+    def adjust_window_size(self):
+        self.update_idletasks()
+        width = max(400, min(self.winfo_reqwidth(), 800))
+        height = max(200, min(self.winfo_reqheight(), 600))
         self.geometry(f"{width}x{height}")
-        self.minsize(width, height)
         
 # Add this class for tooltips
 class CreateToolTip(object):
@@ -303,12 +388,6 @@ class QuestionManager(tk.Toplevel):
             self.current_section = self.section_listbox.get(selected[0])
             self.populate_questions()
 
-    def populate_questions(self):
-        self.question_listbox.delete(0, tk.END)
-        if self.current_section and 'questions' in self.app.guided_questions[self.current_section]:
-            for question in self.app.guided_questions[self.current_section]['questions']:
-                self.question_listbox.insert(tk.END, question['question'])
-
     def add_section(self):
         new_section = self.new_section_entry.get('1.0', tk.END).strip()
         if new_section and new_section not in self.app.guided_questions:
@@ -329,6 +408,12 @@ class QuestionManager(tk.Toplevel):
             self.populate_questions()
             self.app.save_questions()
 
+    def populate_questions(self):
+        self.question_listbox.delete(0, tk.END)
+        if self.current_section and 'questions' in self.app.guided_questions[self.current_section]:
+            for question in self.app.guided_questions[self.current_section]['questions']:
+                self.question_listbox.insert(tk.END, question['question'])
+
     def add_question(self):
         if not self.current_section:
             messagebox.showwarning("Warning", "Please select a section first.")
@@ -338,9 +423,11 @@ class QuestionManager(tk.Toplevel):
         self.wait_window(dialog)
         
         if dialog.result:
+            if 'questions' not in self.app.guided_questions[self.current_section]:
+                self.app.guided_questions[self.current_section]['questions'] = []
             self.app.guided_questions[self.current_section]['questions'].append(dialog.result)
             self.populate_questions()
-            self.app.save_questions()
+            self.save_questions()
 
     def edit_question(self):
         if not self.current_section:
@@ -361,7 +448,25 @@ class QuestionManager(tk.Toplevel):
         if dialog.result:
             self.app.guided_questions[self.current_section]['questions'][question_index] = dialog.result
             self.populate_questions()
-            self.app.save_questions()
+            self.save_questions()
+
+    def save_follow_up_questions(self, question_data, follow_up_questions):
+        for section_name, section in self.app.guided_questions.items():
+            for i, question in enumerate(section.get('questions', [])):
+                if question == question_data:
+                    if 'follow_up' not in question:
+                        question['follow_up'] = []
+                    question['follow_up'] = follow_up_questions
+                    self.app.guided_questions[section_name]['questions'][i] = question
+                    self.save_questions()
+                    messagebox.showinfo("Success", "Follow-up questions saved successfully!")
+                    return
+        print("Warning: Question not found. Follow-up questions not saved.")
+
+    def save_questions(self):
+        with open('guided_questions.json', 'w') as f:
+            json.dump(self.app.guided_questions, f, indent=2)
+        print("Questions saved to guided_questions.json") 
 
     def remove_question(self):
         if not self.current_section:
@@ -379,9 +484,6 @@ class QuestionManager(tk.Toplevel):
             del self.app.guided_questions[self.current_section]['questions'][question_index]
             self.populate_questions()
             self.app.save_questions()
-            
-    def save_questions(self):
-        self.app.save_questions()
         
 class AdminSection:
     def __init__(self, master, app):
@@ -406,7 +508,6 @@ class AdminSection:
 
         ttk.Button(self.master, text="Manage Questions", command=self.manage_questions).pack(pady=10)
         ttk.Button(self.master, text="Change Password", command=self.change_password).pack(pady=10)
-        ttk.Button(self.master, text="Save Changes", command=self.save_changes).pack(pady=10)
 
     def manage_questions(self):
         QuestionManager(self.master, self.app)
@@ -425,20 +526,16 @@ class AdminSection:
                     messagebox.showerror("Error", "Passwords do not match")
         else:
             messagebox.showerror("Error", "Incorrect current password")
-
-    def save_changes(self):
-        self.app.save_questions()
-        messagebox.showinfo("Success", "Changes saved successfully!")
         
 class LLMPlayground:
     def __init__(self, master):
         self.master = master
-        master.title("LLM Playground")
+        master.title("Regulatory Bulletin Assistant")
         master.geometry("1200x800")
-        self.max_file_size = 5 * 1024 * 1024  # 50 MB limit, adjust as needed
+        self.font_size = tk.IntVar(value=12)
+        self.max_file_size = 5 * 1024 * 1024  # 5 MB limit, adjust as needed
         self.keywords_df = pd.read_csv('keyword_extraction.csv')
         self.guided_questions = {}
-        # self.summarizer = Summarizer()
         self.load_questions()
         self.conversations = {}
         self.current_conversation = None
@@ -460,10 +557,6 @@ class LLMPlayground:
         self.api_key = os.environ.get("CHALLENGER_GENAI_API_KEY")
         if not self.api_key:
             raise ValueError("API key not found. Please set CHALLENGER_GENAI_API_KEY in your .env file.")
-        
-    def save_questions(self):
-        with open('guided_questions.json', 'w') as f:
-            json.dump(self.guided_questions, f)
 
     def save_password(self, password):
         salt = bcrypt.gensalt()
@@ -521,23 +614,20 @@ class LLMPlayground:
         ttk.Button(sidebar, text="Load Conversations", command=self.load_conversations).pack(pady=5, fill='x')
         ttk.Button(sidebar, text="Clear Chat History", command=self.clear_chat_history).pack(pady=5, fill='x')
         ttk.Button(sidebar, text="Admin Section", command=self.open_admin_section).pack(pady=5, fill='x')
-        
+
+        # Add font size slider
+        ttk.Label(sidebar, text="Font Size").pack(pady=5)
+        font_size_slider = ttk.Scale(sidebar, from_=12, to=20, orient='horizontal', variable=self.font_size, command=self.update_font_size)
+        font_size_slider.pack(pady=5, padx=5, fill='x')
+
         ttk.Label(sidebar, text="Your conversations").pack(pady=5)
         self.conversation_listbox = tk.Listbox(sidebar)
         self.conversation_listbox.pack(pady=5, padx=5, fill='x')
         self.conversation_listbox.bind('<<ListboxSelect>>', self.on_conversation_select)
 
-        ttk.Label(sidebar, text="Select Model").pack(pady=5)
-        self.model_combobox = ttk.Combobox(sidebar, values=self.get_challenger_models(), width=30)
-        self.model_combobox.pack(pady=5, padx=5, fill='x')
-        if "llama3" in self.model_combobox['values']:
-            self.model_combobox.set("llama3")
-        else:
-            self.model_combobox.set(self.model_combobox['values'][0])
-
         ttk.Label(sidebar, text="Temperature").pack(pady=5)
         self.temperature_scale = ttk.Scale(sidebar, from_=0, to=1, orient='horizontal')
-        self.temperature_scale.set(0.7)
+        self.temperature_scale.set(0.4)
         self.temperature_scale.pack(pady=5, padx=5, fill='x')
 
         ttk.Label(sidebar, text="Max Tokens").pack(pady=5)
@@ -548,13 +638,14 @@ class LLMPlayground:
         ttk.Button(sidebar, text="Upload Context for RAG", command=self.upload_context_for_rag).pack(pady=5, fill='x')
 
         # Chat area widgets
-        self.chat_display = scrolledtext.ScrolledText(chat_area, state='disabled')
+        self.chat_display = scrolledtext.ScrolledText(chat_area, state='disabled', wrap=tk.WORD, font=("TkDefaultFont", self.font_size.get()))
         self.chat_display.pack(pady=10, fill='both', expand=True)
 
+        # Create input frame
         input_frame = ttk.Frame(chat_area)
         input_frame.pack(fill='x', pady=10)
 
-        self.user_input = ttk.Entry(input_frame)
+        self.user_input = ttk.Entry(input_frame, font=("TkDefaultFont", self.font_size.get()))
         self.user_input.pack(side='left', fill='x', expand=True)
 
         ttk.Button(input_frame, text="Attach File", command=self.attach_file).pack(side='left', padx=5)
@@ -566,19 +657,23 @@ class LLMPlayground:
         self.chat_display.tag_configure('assistant', foreground='green')
         self.chat_display.tag_configure('assistant_message', foreground='black')
 
+        # Set the model
+        self.model = "llama-3-8b-instruct"
+        print(f"Using model: {self.model}")
+        
     def apply_style(self):
         style = ttk.Style()
         style.theme_use('clam')
 
         style.configure('.', background='#f0f0f0', foreground='#333333')
-        style.configure('TButton', background='#4CAF50', foreground='white')
-        style.map('TButton', background=[('active', '#45a049')])
+        style.configure('TButton', background='#0672CB', foreground='white')
+        style.map('TButton', background=[('active', '#0C3244')])
         style.configure('TEntry', fieldbackground='white')
         style.configure('TCombobox', fieldbackground='white')
-        style.configure('TScale', background='#4CAF50')
+        style.configure('TScale', background='#0672CB')
 
-        default_font = ('Helvetica', 10)
-        heading_font = ('Helvetica', 12, 'bold')
+        default_font = ('Aldhabi', 16)
+        heading_font = ('Aldhabi', 18, 'bold')
         
         style.configure('.', font=default_font)
         style.configure('TButton', font=default_font)
@@ -586,6 +681,12 @@ class LLMPlayground:
 
         self.chat_display.configure(font=default_font, background='white', foreground='#333333')
         self.conversation_listbox.configure(font=default_font, background='white', foreground='#333333')
+
+    def update_font_size(self, event=None):
+        new_size = self.font_size.get()
+        self.chat_display.configure(font=("TkDefaultFont", new_size))
+        self.user_input.configure(font=("TkDefaultFont", new_size))
+        # Update font size for other widgets as needed
 
     def open_admin_section(self):
         admin_window = tk.Toplevel(self.master)
@@ -597,40 +698,55 @@ class LLMPlayground:
         answers = {}
 
         for section, data in self.guided_questions.items():
-            for question in data.get('questions', []):  # Use get to handle missing 'questions' key
-                if question['type'] == 'checkbox':
-                    dialog = GuidedQuestionDialog(self.master, section, question)
+            section_answers = []
+            for question in data.get('questions', []):
+                question_text = question.get('question', '')
+                question_type = question.get('type', '')
+                
+                if question_type == 'checkbox':
+                    dialog = GuidedQuestionDialog(self.master, question_text, question)
                     self.master.wait_window(dialog)
                     if dialog.result:
-                        answers[section] = [option for option, var in dialog.result if var.get()]
+                        selected_options = [option for option, var in dialog.result if var.get()]
+                        section_answers.append(f"{question_text}: {', '.join(selected_options)}")
                 
-                elif question['type'] == 'yesno':
-                    answer = messagebox.askyesno(section, question.get('question', "Yes/No Question"))
-                    answers[section] = "Yes" if answer else "No"
-                
-                elif question['type'] == 'multiple':
-                    if messagebox.askyesno(section, question.get('question', "Multiple Choice Question")):
-                        dialog = GuidedQuestionDialog(self.master, f"{section} options", question)
-                        self.master.wait_window(dialog)
-                        if dialog.result:
-                            answers[section] = [option for option, var in dialog.result if var.get()]
-                    else:
-                        answers[section] = "No"
-                
-                elif question['type'] == 'open':
-                    dialog = GuidedQuestionDialog(self.master, section, question)
+                elif question_type == 'yesno':
+                    dialog = GuidedQuestionDialog(self.master, question_text, question)
                     self.master.wait_window(dialog)
-                    answer = dialog.result
-                    if answer:
-                        answers[section] = answer
+                    if dialog.result:
+                        answer = dialog.result.get()
+                        section_answers.append(f"{question_text}: {answer}")
+                        
+                        # Handle follow-up questions
+                        for follow_up in question.get('follow_up', []):
+                            if follow_up['condition'] == answer.lower():
+                                follow_up_answer = self.process_follow_up_question(follow_up)
+                                if follow_up_answer:
+                                    section_answers.append(follow_up_answer)
+                
+                elif question_type == 'multiple':
+                    dialog = GuidedQuestionDialog(self.master, question_text, question)
+                    self.master.wait_window(dialog)
+                    if dialog.result:
+                        selected_options = [option for option, var in dialog.result if var.get()]
+                        section_answers.append(f"{question_text}: {', '.join(selected_options)}")
+                
+                elif question_type == 'open':
+                    dialog = GuidedQuestionDialog(self.master, question_text, question)
+                    self.master.wait_window(dialog)
+                    if dialog.result:
+                        section_answers.append(f"{question_text}: {dialog.result}")
+
+            if section_answers:
+                answers[section] = section_answers
 
         # Construct the suggested prompt
         suggested_prompt = "Please summarize the attached document with the following considerations:\n\n"
-        for section, answer in answers.items():
-            if isinstance(answer, list):
-                suggested_prompt += f"{section}: {', '.join(answer)}\n"
-            else:
-                suggested_prompt += f"{section}: {answer}\n"
+        for section, section_answers in answers.items():
+            suggested_prompt += f"{section}:\n"
+            for answer in section_answers:
+                suggested_prompt += f"- {answer}\n"
+            suggested_prompt += "\n"
 
         suggested_prompt += "\nPlease provide a comprehensive summary for a bulletin based on these factors. Pretend that you are a regulatory engineer whose job is to interpret this document into an internal regulatory bulletin for engineers to follow some important compliance guidance. Do not focus on punishments or penalties. Please provide the summary with all the following sections, and all of them should be filled in with corresponding information:\n"
         suggested_prompt += "1) Program Requirements Summary: a 2-3 sentence, brief summary of the regulation.\n" + \
@@ -646,11 +762,42 @@ class LLMPlayground:
                             "11) Dependency: Is the requirement dependent on another requirement in the table? If so, list the requirement that must be completed to meet the requirement.\n" + \
                             "12) Details of Requirement: High level explanation of the regulatory requirement\n" + \
                             "13) Wireless Technology Scope: For Wireless Programs only, leave blank if not related\n" + \
-                            "14) Detail Requirements: This is details of Regulation.  May include some tables and technical detail copied from regulation.  Should not, however be a straight copy/paste.\n" 
+                            "14) Detail Requirements: This is details of Regulation.  May include some tables and technical detail copied from regulation.  Should not, however be a straight copy/paste.\n"
 
         print(f"Suggested prompt: {suggested_prompt}")
         return suggested_prompt
 
+    def process_follow_up_question(self, follow_up):
+        question_text = follow_up.get('question', '')
+        question_type = follow_up.get('type', '')
+        
+        if question_type == 'checkbox':
+            dialog = GuidedQuestionDialog(self.master, question_text, follow_up)
+            self.master.wait_window(dialog)
+            if dialog.result:
+                selected_options = [option for option, var in dialog.result if var.get()]
+                return f"{question_text}: {', '.join(selected_options)}"
+        
+        elif question_type == 'yesno':
+            dialog = GuidedQuestionDialog(self.master, question_text, follow_up)
+            self.master.wait_window(dialog)
+            if dialog.result:
+                return f"{question_text}: {dialog.result.get()}"
+        
+        elif question_type == 'multiple':
+            dialog = GuidedQuestionDialog(self.master, question_text, follow_up)
+            self.master.wait_window(dialog)
+            if dialog.result:
+                selected_options = [option for option, var in dialog.result if var.get()]
+                return f"{question_text}: {', '.join(selected_options)}"
+        
+        elif question_type == 'open':
+            dialog = GuidedQuestionDialog(self.master, question_text, follow_up)
+            self.master.wait_window(dialog)
+            if dialog.result:
+                return f"{question_text}: {dialog.result}"
+        
+        return None
 
     def upload_context_for_rag(self):
         file_path = filedialog.askopenfilename(filetypes=[
@@ -751,14 +898,14 @@ class LLMPlayground:
             if messagebox.askyesno("AI Summary", "Do you want an AI-generated summary of the attached file?"):
                 full_prompt = f"{user_input}\n\nAttached File Content:\n{self.attached_file_content}\n\nPossible Keywords: {keywords}"
                 self.display_file_briefing(user_input, keywords)
-                threading.Thread(target=self.get_model_response, args=(self.model_combobox.get(), full_prompt)).start()
+                threading.Thread(target=self.get_model_response, args=(self.model, full_prompt)).start()
             else:
                 self.display_file_briefing(user_input, keywords)
         else:
             # Normal message without attachment
             self.conversations[self.current_conversation].append({"role": "user", "content": user_input})
             self.update_chat_display()
-            threading.Thread(target=self.get_model_response, args=(self.model_combobox.get(), user_input)).start()
+            threading.Thread(target=self.get_model_response, args=(self.model, user_input)).start()
 
         self.user_input.delete(0, tk.END)
         self.attached_file_content = None  # Reset after sending
@@ -790,15 +937,39 @@ class LLMPlayground:
         # Perform fuzzy matching
         best_match = process.extractOne(combined_answers, checked_keywords['Checked'])
 
-        if best_match and best_match[1] > 60:  # You can adjust the threshold
+        if best_match and best_match[1] > 75:  # You can adjust the threshold
             matched_row = checked_keywords[checked_keywords['Checked'] == best_match[0]].iloc[0]
-            return matched_row['Keywords']
+            keywords = matched_row['Keywords'].split(',')
+            
+            # Filter out region-specific keywords
+            filtered_keywords = [kw.strip() for kw in keywords if not self.is_region_specific(kw.strip())]
+            
+            return ', '.join(filtered_keywords)
         else:
             return ""
 
+    def is_region_specific(self, keyword):
+        region_specific_terms = ['USA', 'EU', 'China', 'Japan', 'Korea', 'Canada', 'Australia', 'UK', 'Germany', 'France', 'Italy', 'Spain']
+        return any(term.lower() in keyword.lower() for term in region_specific_terms)
+
+    def add_question(self):
+        if not self.current_section:
+            messagebox.showwarning("Warning", "Please select a section first.")
+            return
+        
+        dialog = QuestionDialog(self, "Add Question")
+        self.wait_window(dialog)
+        
+        if dialog.result:
+            if 'questions' not in self.app.guided_questions[self.current_section]:
+                self.app.guided_questions[self.current_section]['questions'] = []
+            self.app.guided_questions[self.current_section]['questions'].append(dialog.result)
+            self.populate_questions()
+            self.save_questions()  # Save questions after adding a new one
+
     def save_questions(self):
         with open('guided_questions.json', 'w') as f:
-            json.dump(self.guided_questions, f)
+            json.dump(self.guided_questions, f, indent=2)
 
     def load_questions(self):
         try:
@@ -1038,8 +1209,44 @@ class LLMPlayground:
         self.chat_display.insert("end", f"{info}\n")
         self.chat_display.config(state='disabled')
         self.chat_display.see("end")
-
+        
     def summarize_responses(self, model, combined_response, original_prompt):
+        chunks = self.smart_chunk_prompt(combined_response, max_tokens=4000)
+        
+        if len(chunks) == 1:
+            return self.process_summary_chunk(model, chunks[0], original_prompt)
+        
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            futures = [executor.submit(self.process_summary_chunk, model, chunk, original_prompt) for chunk in chunks]
+            summaries = [future.result() for future in concurrent.futures.as_completed(futures)]
+        
+        # Combine meaningful parts from all summaries
+        combined_summary = self.combine_meaningful_parts(summaries)
+        
+        # If the combined summary is still too long, summarize it again
+        if len(self.tokenizer.encode(combined_summary)) > 4000:
+            return self.summarize_responses(model, combined_summary, original_prompt)
+        
+        return combined_summary
+    
+    def combine_meaningful_parts(self, summaries):
+        combined_parts = {}
+        for summary in summaries:
+            parts = summary.split('\n\n')
+            for part in parts:
+                if ':' in part:
+                    key, content = part.split(':', 1)
+                    key = key.strip()
+                    content = content.strip()
+                    if content.lower() not in ['not applicable', 'information not available in this chunk', 'n/a']:
+                        if key in combined_parts:
+                            combined_parts[key] += '\n' + content
+                        else:
+                            combined_parts[key] = content
+        
+        return '\n\n'.join([f"{key}: {value}" for key, value in combined_parts.items()])
+    
+    def process_summary_chunk(self, model, chunk, original_prompt):
         url = "https://opensource-challenger-api.prdlvgpu1.aiaccel.dell.com/v1/chat/completions"
         headers = {
             'accept': 'application/json',
@@ -1050,11 +1257,11 @@ class LLMPlayground:
         instruction_match = re.search(r"Please provide .+?:\n", original_prompt, re.DOTALL)
         if instruction_match:
             instructions = instruction_match.group(0)
-            summary_prompt = f"{instructions}\n\nPlease summarize and consolidate the following responses into a single coherent response, following the format specified above:\n\n{combined_response}"
+            summary_prompt = f"{instructions}\n\nPlease summarize and consolidate the following response chunk, following the format specified above:\n\n{chunk}"
         else:
-            summary_prompt = f"Please summarize and consolidate the following responses into a single coherent response:\n\n{combined_response}"
+            summary_prompt = f"Please summarize and consolidate the following response chunk:\n\n{chunk}"
 
-        system_message = "You are a helpful AI assistant. Summarize the given information concisely."
+        system_message = "You are a helpful AI assistant. Summarize the given information concisely. If a section is not applicable or information is not available, simply write 'Not applicable' for that section."
         
         # Construct messages array
         messages = [
@@ -1088,7 +1295,7 @@ class LLMPlayground:
         data = {
             "model": model,
             "messages": messages,
-            "temperature": 0.7,
+            "temperature": self.temperature_scale.get(),
             "top_p": 0.95,
             "max_tokens": max_tokens,
             "stream": True
@@ -1115,7 +1322,7 @@ class LLMPlayground:
                 else:
                     print(f"Unexpected line format: {decoded_line}")
                         
-        return summary_response
+        return summary_response    
     
     def update_response(self, response):
         self.chat_display.config(state='normal')
