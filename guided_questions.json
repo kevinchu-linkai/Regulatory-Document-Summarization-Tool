@@ -229,6 +229,24 @@
             "condition": "no"
           }
         ]
+      },
+      {
+        "question": "123?",
+        "type": "checkbox",
+        "options": [
+          "1",
+          "2",
+          "3"
+        ]
+      },
+      {
+        "question": "456?",
+        "type": "checkbox",
+        "options": [
+          "4",
+          "5",
+          "6"
+        ]
       }
     ]
   }
