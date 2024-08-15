@@ -1,10 +1,10 @@
 {
   "General": {
-    "type": "open",
+    "type": "Open",
     "questions": [
       {
         "question": "Please provide a general overview of the document.",
-        "type": "open"
+        "type": "Open"
       }
     ]
   },
@@ -69,7 +69,7 @@
     "questions": [
       {
         "question": "What fields does this document impact?",
-        "type": "checkbox",
+        "type": "Check-Box",
         "options": [
           "EMC",
           "Safety",
@@ -90,7 +90,7 @@
     "questions": [
       {
         "question": "What impacts does this document have?",
-        "type": "checkbox",
+        "type": "Check-Box",
         "options": [
           "Certification/DOC/Registration",
           "New/Revision",
@@ -123,7 +123,7 @@
     "questions": [
       {
         "question": "Does it impact product 'Design change'?",
-        "type": "yesno"
+        "type": "Yes/No"
       }
     ]
   },
@@ -132,7 +132,7 @@
     "questions": [
       {
         "question": "Does it impact product 'Label'?",
-        "type": "multiple",
+        "type": "Multiple",
         "options": [
           "New logo",
           "Color change",
@@ -146,7 +146,7 @@
     "questions": [
       {
         "question": "Does it impact 'Packaging'?",
-        "type": "multiple",
+        "type": "Multiple",
         "options": [
           "New logo",
           "Others"
@@ -159,7 +159,7 @@
     "questions": [
       {
         "question": "Does it impact 'User manual' (hard copy)?",
-        "type": "multiple",
+        "type": "Multiple",
         "options": [
           "SERI",
           "QR card"
@@ -172,7 +172,7 @@
     "questions": [
       {
         "question": "Does it impact 'User manual' (soft copy)?",
-        "type": "yesno"
+        "type": "Yes/No"
       }
     ]
   },
@@ -181,7 +181,7 @@
     "questions": [
       {
         "question": "Please provide any additional details or comments:",
-        "type": "open"
+        "type": "Open"
       }
     ]
   },
@@ -189,7 +189,7 @@
     "type": "section",
     "questions": [
       {
-        "type": "checkbox",
+        "type": "Check-Box",
         "question": "cool",
         "options": [
           "1",
@@ -198,7 +198,7 @@
         ]
       },
       {
-        "type": "checkbox",
+        "type": "Check-Box",
         "question": "9090",
         "options": [
           "a",
@@ -207,11 +207,11 @@
         ]
       },
       {
-        "type": "yesno",
+        "type": "Yes/No",
         "question": "save-up?",
         "follow_up": [
           {
-            "type": "checkbox",
+            "type": "Check-Box",
             "question": "which",
             "options": [
               "1",
@@ -220,7 +220,7 @@
             "condition": "yes"
           },
           {
-            "type": "checkbox",
+            "type": "Check-Box",
             "question": "why",
             "options": [
               "1",
@@ -232,7 +232,7 @@
       },
       {
         "question": "123?",
-        "type": "checkbox",
+        "type": "Check-Box",
         "options": [
           "1",
           "2",
@@ -241,7 +241,7 @@
       },
       {
         "question": "456?",
-        "type": "checkbox",
+        "type": "Check-Box",
         "options": [
           "4",
           "5",
